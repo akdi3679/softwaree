@@ -53,3 +53,6 @@ temp/
 *.sqlite-wal
 *.sqlite-shm
 *.db
+# Inner git backups
+**/.git.bak/
+
