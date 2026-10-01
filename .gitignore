@@ -1,0 +1,55 @@
+﻿# ---- Rust ----
+target/
+**/target/
+Cargo.lock.bak
+
+# ---- Node ----
+node_modules/
+**/node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-error.log*
+
+# ---- Build output ----
+dist/
+build/
+out/
+.next/
+*.tsbuildinfo
+
+# ---- Env / secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+.credentials/
+
+# ---- Editor ----
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Logs / temp ----
+*.log
+logs/
+tmp/
+temp/
+
+# ---- Local DBs (dev) ----
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db

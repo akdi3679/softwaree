@@ -1,0 +1,27 @@
+# TASK ID: LOAD-004.2
+# TITLE: Commit load sustained
+# STATUS: pending
+# DEPENDENCIES: LOAD-004.1
+# ALLOWED FILES: product/.git/
+# FORBIDDEN FILES: any other change
+# OWNER: any
+# ESTIMATED EFFORT: 1 minute
+
+## OBJECTIVE
+Commit.
+
+## REQUIRED IMPLEMENTATION
+
+```bash
+cd /workspace/product
+git add apps/admin/src-tauri/tests
+git commit -m "test(load): add sustained throughput (LOAD-004)"
+```
+
+## TESTS
+
+```bash
+cd /workspace/product
+git log -1 --pretty=%s | grep -q "LOAD-004" || { echo "FAIL"; exit 1; }
+echo "OK"
+```

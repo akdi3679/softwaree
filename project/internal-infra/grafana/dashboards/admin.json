@@ -1,0 +1,14 @@
+{
+  "title": "Product Admin",
+  "schemaVersion": 38,
+  "panels": [
+    { "title": "Commands per second", "type": "graph",
+      "targets": [{ "expr": "rate(admin_commands_total[1m])" }] },
+    { "title": "Events appended per second", "type": "graph",
+      "targets": [{ "expr": "rate(admin_events_appended_total[1m])" }] },
+    { "title": "Active sync clients", "type": "stat",
+      "targets": [{ "expr": "admin_sync_clients_active" }] },
+    { "title": "Module load p99", "type": "graph",
+      "targets": [{ "expr": "histogram_quantile(0.99, rate(admin_module_load_seconds_bucket[5m]))" }] }
+  ]
+}
