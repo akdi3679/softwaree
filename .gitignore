@@ -1,70 +1,18 @@
-# ---- Rust ----
-target/
-**/target/
-Cargo.lock.bak
+﻿# ============================================================
+# Minimal .gitignore - only the truly huge / dangerous stuff
+# ============================================================
 
-# ---- Node ----
+# Huge build folders (must exclude or GitHub rejects the push)
 node_modules/
 **/node_modules/
-.pnpm-store/
-.pnpm-debug.log*
-npm-debug.log*
-yarn-error.log*
+target/
+**/target/
 
-# ---- Build output ----
-dist/
-build/
-out/
-.next/
-*.tsbuildinfo
-
-# ---- Env / secrets ----
+# Secrets — NEVER push these
 .env
 .env.*
-!.env.example
 *.pem
 *.key
-*.p12
-secrets/
-.credentials/
 
-# ---- Editor ----
-
-
-.idea/
-*.swp
-*.swo
-*~
-
-# ---- OS ----
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# ---- Logs / temp ----
-*.log
-logs/
-tmp/
-temp/
-
-# ---- Local DBs (dev) ----
-*.sqlite
-*.sqlite-journal
-*.sqlite-wal
-*.sqlite-shm
-*.db
-# Inner git backups
+# Nested git backups from our earlier rename
 **/.git.bak/
-
-
-# ---- Build caches (generated) ----
-*.tsbuildinfo
-*.log
-!docs/**/*.log
-**/gen/schemas/
-
-# ---- Keep vscode recommendations ----
-
-# VSCode: ignore everything except extensions.json
-**/.vscode/*
-!**/.vscode/extensions.json

@@ -1,0 +1,70 @@
+# ---- Rust ----
+target/
+**/target/
+Cargo.lock.bak
+
+# ---- Node ----
+node_modules/
+**/node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-error.log*
+
+# ---- Build output ----
+dist/
+build/
+out/
+.next/
+*.tsbuildinfo
+
+# ---- Env / secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+.credentials/
+
+# ---- Editor ----
+
+
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Logs / temp ----
+*.log
+logs/
+tmp/
+temp/
+
+# ---- Local DBs (dev) ----
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db
+# Inner git backups
+**/.git.bak/
+
+
+# ---- Build caches (generated) ----
+*.tsbuildinfo
+*.log
+!docs/**/*.log
+**/gen/schemas/
+
+# ---- Keep vscode recommendations ----
+
+# VSCode: ignore everything except extensions.json
+**/.vscode/*
+!**/.vscode/extensions.json
