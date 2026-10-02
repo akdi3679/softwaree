@@ -1,18 +1,14 @@
-﻿# ============================================================
-# Minimal .gitignore - only the truly huge / dangerous stuff
-# ============================================================
-
-# Huge build folders (must exclude or GitHub rejects the push)
+﻿# === Truly huge folders (must exclude) ===
 node_modules/
 **/node_modules/
 target/
 **/target/
 
-# Secrets — NEVER push these
+# === Secrets (NEVER push) ===
 .env
 .env.*
 *.pem
 *.key
 
-# Nested git backups from our earlier rename
+# === Nested git backups from earlier rename ===
 **/.git.bak/
