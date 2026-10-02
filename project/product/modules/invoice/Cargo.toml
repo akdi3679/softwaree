@@ -1,0 +1,16 @@
+[package]
+name = "invoice-module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Invoice PDF generator module."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+product-module-sdk = { path = "../sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+printpdf = "0.7"

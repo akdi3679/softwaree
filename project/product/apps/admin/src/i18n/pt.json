@@ -1,0 +1,9 @@
+{
+  "common": { "save": "Salvar", "cancel": "Cancelar", "delete": "Excluir", "edit": "Editar", "search": "Pesquisar", "loading": "Carregando...", "error": "Ocorreu um erro", "success": "Sucesso", "confirm": "Confirmar", "yes": "Sim", "no": "Não", "today": "Hoje", "yesterday": "Ontem", "thisWeek": "Esta semana", "thisMonth": "Este mês" },
+  "nav": { "dashboard": "Painel", "projects": "Projetos", "users": "Usuários", "patients": "Pacientes", "samples": "Amostras", "appointments": "Consultas", "audit": "Log de auditoria", "modules": "Módulos", "settings": "Configurações", "help": "Ajuda", "logout": "Sair" },
+  "patients": { "title": "Pacientes", "addPatient": "Adicionar paciente", "name": "Nome", "phone": "Telefone", "email": "E-mail", "dateOfBirth": "Data de nascimento", "archive": "Arquivar", "search": "Pesquisar pacientes..." },
+  "appointments": { "title": "Consultas", "today": "Consultas de hoje", "newAppointment": "Nova consulta", "patient": "Paciente", "doctor": "Médico", "time": "Hora", "duration": "Duração", "status": "Status", "checkIn": "Check-in", "cancel": "Cancelar" },
+  "samples": { "title": "Amostras", "intake": "Receber amostra", "sampleId": "ID da amostra", "type": "Tipo", "submittedBy": "Enviado por", "receivedAt": "Recebido em", "status": "Status", "start": "Iniciar teste", "results": "Resultados", "issueReport": "Emitir relatório" },
+  "errors": { "notFound": "Não encontrado", "forbidden": "Proibido", "unauthorized": "Não autorizado", "validation": "Entrada inválida", "network": "Erro de rede", "serverError": "Erro do servidor" },
+  "auth": { "login": "Entrar", "signup": "Cadastrar", "email": "E-mail", "password": "Senha", "forgotPassword": "Esqueceu a senha?", "verifyEmail": "Verificar e-mail" }
+}

@@ -1,0 +1,29 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    versioning-strategy: "auto"
+    labels:
+      - "dependencies"
+      - "automerge"
+
+  - package-ecosystem: "cargo"
+    directory: "/apps/admin/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "rust"
+
+  - package-ecosystem: "cargo"
+    directory: "/apps/user/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "rust"

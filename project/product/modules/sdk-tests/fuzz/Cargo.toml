@@ -1,0 +1,15 @@
+[package]
+name = "sdk-fuzz"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "command"
+path = "fuzz_targets/command.rs"
+
+[dependencies]
+product-module-sdk = { path = "../../sdk" }
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+serde_json = "1"

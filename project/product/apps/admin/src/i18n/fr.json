@@ -1,0 +1,99 @@
+{
+  "common": {
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "delete": "Supprimer",
+    "edit": "Modifier",
+    "search": "Rechercher",
+    "loading": "Chargement...",
+    "error": "Une erreur est survenue",
+    "success": "Succès",
+    "confirm": "Confirmer",
+    "yes": "Oui",
+    "no": "Non",
+    "today": "Aujourd'hui",
+    "yesterday": "Hier",
+    "thisWeek": "Cette semaine",
+    "thisMonth": "Ce mois-ci"
+  },
+  "nav": {
+    "dashboard": "Tableau de bord",
+    "projects": "Projets",
+    "users": "Utilisateurs",
+    "patients": "Patients",
+    "samples": "Échantillons",
+    "appointments": "Rendez-vous",
+    "audit": "Journal d'audit",
+    "modules": "Modules",
+    "settings": "Paramètres",
+    "help": "Aide",
+    "logout": "Se déconnecter",
+    "backup": "Sauvegardes"
+  },
+  "projects": { "title": "Projets", "new": "Nouveau projet" },
+  "users": {
+    "title": "Utilisateurs",
+    "invite": "Inviter un utilisateur",
+    "email": "Courriel",
+    "role": "Rôle",
+    "invitations": { "oneTime": "Partagez ce jeton avec l'invité (affichage unique)" }
+  },
+  "patients": {
+    "title": "Patients",
+    "addPatient": "Ajouter un patient",
+    "name": "Nom",
+    "phone": "Téléphone",
+    "email": "Courriel",
+    "dateOfBirth": "Date de naissance",
+    "archive": "Archiver",
+    "search": "Rechercher des patients..."
+  },
+  "appointments": {
+    "title": "Rendez-vous",
+    "today": "Rendez-vous d'aujourd'hui",
+    "newAppointment": "Nouveau rendez-vous",
+    "patient": "Patient",
+    "doctor": "Médecin",
+    "time": "Heure",
+    "duration": "Durée",
+    "status": "Statut",
+    "checkIn": "Enregistrer l'arrivée",
+    "cancel": "Annuler"
+  },
+  "samples": {
+    "title": "Échantillons",
+    "intake": "Réceptionner un échantillon",
+    "sampleId": "ID de l'échantillon",
+    "type": "Type",
+    "submittedBy": "Soumis par",
+    "receivedAt": "Reçu le",
+    "status": "Statut",
+    "start": "Démarrer le test",
+    "results": "Résultats",
+    "issueReport": "Émettre le rapport"
+  },
+  "audit": { "title": "Journal d'audit" },
+  "modules": { "title": "Modules", "installed": "Installés", "available": "Disponibles" },
+  "backup": {
+    "title": "Sauvegardes",
+    "passphrase": "Phrase secrète (obligatoire)",
+    "note": "Note (facultatif)",
+    "create": "Créer et téléverser"
+  },
+  "errors": {
+    "notFound": "Introuvable",
+    "forbidden": "Interdit",
+    "unauthorized": "Non autorisé",
+    "validation": "Entrée invalide",
+    "network": "Erreur réseau",
+    "serverError": "Erreur serveur"
+  },
+  "auth": {
+    "login": "Se connecter",
+    "signup": "S'inscrire",
+    "email": "Courriel",
+    "password": "Mot de passe",
+    "forgotPassword": "Mot de passe oublié ?",
+    "verifyEmail": "Vérifier le courriel"
+  }
+}

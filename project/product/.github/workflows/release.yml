@@ -1,0 +1,38 @@
+name: Release
+on:
+  push:
+    tags:
+      - "v*"
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build Admin Tauri app
+        run: |
+          cd apps/admin
+          pnpm install
+          pnpm tauri build --target ${{ matrix.target }}
+      - name: Sign binaries (cosign)
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+        run: |
+          echo "signing placeholder"
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            apps/admin/src-tauri/target/${{ matrix.target }}/release/bundle/**/*
+          body: |
+            See CHANGELOG.md for changes.

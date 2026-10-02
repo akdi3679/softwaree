@@ -1,0 +1,65 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/Cargo.lock
+src-tauri/gen/schemas/
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Coverage / test
+coverage/
+.nyc_output/
+*.lcov
+
+# Local keys (NEVER commit)
+*.pem
+*.key
+*.p12
+*.pfx
+keys/
+*.bak
+
+# WireGuard interface state (never commit)
+tailscale.state
+# Rust build artifacts
+target/
+**/target/
+*.rs.bk
+
+
+# Rust build artifacts
+target/
+**/target/
+*.rs.bk
+

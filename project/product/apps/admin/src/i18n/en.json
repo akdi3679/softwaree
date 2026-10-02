@@ -1,0 +1,108 @@
+{
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "search": "Search",
+    "loading": "Loading...",
+    "error": "An error occurred",
+    "success": "Success",
+    "confirm": "Confirm",
+    "yes": "Yes",
+    "no": "No",
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "thisWeek": "This week",
+    "thisMonth": "This month"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "projects": "Projects",
+    "users": "Users",
+    "patients": "Patients",
+    "samples": "Samples",
+    "appointments": "Appointments",
+    "audit": "Audit log",
+    "modules": "Modules",
+    "settings": "Settings",
+    "help": "Help",
+    "logout": "Log out",
+    "backup": "Backup"
+  },
+  "projects": {
+    "title": "Projects",
+    "new": "New project"
+  },
+  "users": {
+    "title": "Users",
+    "invite": "Invite user",
+    "email": "Email",
+    "role": "Role",
+    "invitations": {
+      "oneTime": "Share this token with the invitee (one-time view)"
+    }
+  },
+  "patients": {
+    "title": "Patients",
+    "addPatient": "Add patient",
+    "name": "Name",
+    "phone": "Phone",
+    "email": "Email",
+    "dateOfBirth": "Date of birth",
+    "archive": "Archive",
+    "search": "Search patients..."
+  },
+  "appointments": {
+    "title": "Appointments",
+    "today": "Today's appointments",
+    "newAppointment": "New appointment",
+    "patient": "Patient",
+    "doctor": "Doctor",
+    "time": "Time",
+    "duration": "Duration",
+    "status": "Status",
+    "checkIn": "Check in",
+    "cancel": "Cancel"
+  },
+  "samples": {
+    "title": "Samples",
+    "intake": "Intake sample",
+    "sampleId": "Sample ID",
+    "type": "Type",
+    "submittedBy": "Submitted by",
+    "receivedAt": "Received at",
+    "status": "Status",
+    "start": "Start test",
+    "results": "Results",
+    "issueReport": "Issue report"
+  },
+  "audit": { "title": "Audit log" },
+  "modules": {
+    "title": "Modules",
+    "installed": "Installed",
+    "available": "Available"
+  },
+  "backup": {
+    "title": "Backups",
+    "passphrase": "Backup passphrase (required)",
+    "note": "Note (optional)",
+    "create": "Create & upload"
+  },
+  "errors": {
+    "notFound": "Not found",
+    "forbidden": "Forbidden",
+    "unauthorized": "Unauthorized",
+    "validation": "Invalid input",
+    "network": "Network error",
+    "serverError": "Server error"
+  },
+  "auth": {
+    "login": "Log in",
+    "signup": "Sign up",
+    "email": "Email",
+    "password": "Password",
+    "forgotPassword": "Forgot password?",
+    "verifyEmail": "Verify email"
+  }
+}

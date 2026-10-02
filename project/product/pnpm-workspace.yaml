@@ -1,0 +1,11 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "modules/*"
+
+# Allow build scripts from these specific packages only.
+# Any package not in this list will be blocked from running install scripts.
+onlyBuiltDependencies:
+  - "@biomejs/biome"
+  - "esbuild"
+  - "better-sqlite3"

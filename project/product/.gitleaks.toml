@@ -1,0 +1,22 @@
+title = "Product"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "stripe-key"
+description = "Stripe API key"
+regex = "sk_(?:live|test)_[A-Za-z0-9]{24,99}"
+tags = ["secret", "stripe"]
+
+[[rules]]
+id = "aws-access-key"
+description = "AWS Access Key"
+regex = "AKIA[0-9A-Z]{16}"
+tags = ["secret", "aws"]
+
+[[rules]]
+id = "private-key"
+description = "Private key"
+regex = "-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
+tags = ["secret"]

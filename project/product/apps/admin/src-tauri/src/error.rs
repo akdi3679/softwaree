@@ -1,0 +1,129 @@
+﻿use serde::Serialize;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum AppError {
+    #[error("path resolution failed: {0}")]
+    PathResolution(String),
+    #[error("path creation failed: {0}: {1}")]
+    PathCreation(std::path::PathBuf, String),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("json error: {0}")]
+    Json(String),
+    #[error("database error: {0}")]
+    Database(String),
+    #[error("crypto error: {0}")]
+    Crypto(String),
+    #[error("module error: {0}")]
+    Module(String),
+    #[error("network error: {0}")]
+    Network(String),
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
+    #[error("not found: {0}")]
+    NotFound(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
+    #[error("invalid state: {0}")]
+    InvalidState(String),
+    #[error("validation error: {0}")]
+    Validation(String),
+    #[error("protocol error: {0}")]
+    Protocol(String),
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
+#[derive(Debug, Serialize)]
+pub struct SerializableError {
+    pub code: String,
+    pub category: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+impl From<AppError> for SerializableError {
+    fn from(err: AppError) -> Self {
+        let (code, category) = match &err {
+            AppError::Validation(_) => ("VALIDATION_FAILED", "validation"),
+            AppError::PermissionDenied(_) => ("AUTH_INSUFFICIENT_PERMISSION", "authorization"),
+            AppError::NotFound(_) => ("RESOURCE_NOT_FOUND", "not_found"),
+            AppError::Conflict(_) => ("CONFLICT_VERSION_MISMATCH", "conflict"),
+            AppError::Network(_) => ("NET_TRANSIENT", "transient"),
+            AppError::Database(_) => ("DB_ERROR", "permanent"),
+            AppError::Crypto(_) => ("CRYPTO_ERROR", "permanent"),
+            AppError::Module(_) => ("MODULE_ERROR", "permanent"),
+            AppError::PathResolution(_) | AppError::PathCreation(_, _) => {
+                ("INTERNAL_PATH", "permanent")
+            }
+            AppError::Io(_) => ("IO_ERROR", "transient"),
+            AppError::Json(_) => ("JSON_ERROR", "validation"),
+            AppError::InvalidState(_) => ("INVALID_STATE", "permanent"),
+            AppError::Protocol(_) => ("SYNC_PROTOCOL_ERROR", "protocol"),
+            AppError::Internal(_) => ("INTERNAL_ERROR", "permanent"),
+        };
+        SerializableError {
+            code: code.to_string(),
+            category: category.to_string(),
+            message: err.to_string(),
+            details: None,
+        }
+    }
+}
+
+impl serde::Serialize for AppError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let s: SerializableError = self.clone().into();
+        s.serialize(serializer)
+    }
+}
+
+impl Clone for AppError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::PathResolution(s) => Self::PathResolution(s.clone()),
+            Self::PathCreation(p, s) => Self::PathCreation(p.clone(), s.clone()),
+            Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), e.to_string())),
+            Self::Json(s) => Self::Json(s.clone()),
+            Self::Database(s) => Self::Database(s.clone()),
+            Self::Crypto(s) => Self::Crypto(s.clone()),
+            Self::Module(s) => Self::Module(s.clone()),
+            Self::Network(s) => Self::Network(s.clone()),
+            Self::PermissionDenied(s) => Self::PermissionDenied(s.clone()),
+            Self::NotFound(s) => Self::NotFound(s.clone()),
+            Self::Conflict(s) => Self::Conflict(s.clone()),
+            Self::InvalidState(s) => Self::InvalidState(s.clone()),
+            Self::Validation(s) => Self::Validation(s.clone()),
+            Self::Protocol(s) => Self::Protocol(s.clone()),
+            Self::Internal(s) => Self::Internal(s.clone()),
+        }
+    }
+}
+
+impl From<serde_json::Error> for AppError {
+    fn from(err: serde_json::Error) -> Self {
+        AppError::Json(err.to_string())
+    }
+}
+
+impl From<sqlx::Error> for AppError {
+    fn from(err: sqlx::Error) -> Self {
+        AppError::Database(err.to_string())
+    }
+}
+
+impl From<wasmtime::Error> for AppError {
+    fn from(err: wasmtime::Error) -> Self {
+        AppError::Module(err.to_string())
+    }
+}
+
+impl From<argon2::Error> for AppError {
+    fn from(err: argon2::Error) -> Self {
+        AppError::Crypto(err.to_string())
+    }
+}
+
+pub type AppResult<T> = std::result::Result<T, AppError>;

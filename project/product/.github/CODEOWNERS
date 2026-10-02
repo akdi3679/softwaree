@@ -1,0 +1,11 @@
+# Default owners for everything in the repo.
+* @product/core
+
+# Contracts package is critical, assign additional owner.
+/packages/contracts/ @product/core
+
+# Admin app
+/apps/admin/ @product/core
+
+# User app
+/apps/user/ @product/core

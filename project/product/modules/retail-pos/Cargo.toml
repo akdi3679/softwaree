@@ -1,0 +1,13 @@
+[package]
+name = "retail-pos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retail POS: products, sales, refunds."
+
+[dependencies]
+product-module-sdk = { path = "../sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

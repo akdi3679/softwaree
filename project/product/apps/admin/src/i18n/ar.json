@@ -1,0 +1,99 @@
+{
+  "common": {
+    "save": "حفظ",
+    "cancel": "إلغاء",
+    "delete": "حذف",
+    "edit": "تعديل",
+    "search": "بحث",
+    "loading": "جاري التحميل...",
+    "error": "حدث خطأ",
+    "success": "نجاح",
+    "confirm": "تأكيد",
+    "yes": "نعم",
+    "no": "لا",
+    "today": "اليوم",
+    "yesterday": "أمس",
+    "thisWeek": "هذا الأسبوع",
+    "thisMonth": "هذا الشهر"
+  },
+  "nav": {
+    "dashboard": "لوحة التحكم",
+    "projects": "المشاريع",
+    "users": "المستخدمون",
+    "patients": "المرضى",
+    "samples": "العينات",
+    "appointments": "المواعيد",
+    "audit": "سجل التدقيق",
+    "modules": "الوحدات",
+    "settings": "الإعدادات",
+    "help": "المساعدة",
+    "logout": "تسجيل الخروج",
+    "backup": "النسخ الاحتياطي"
+  },
+  "projects": { "title": "المشاريع", "new": "مشروع جديد" },
+  "users": {
+    "title": "المستخدمون",
+    "invite": "دعوة مستخدم",
+    "email": "البريد الإلكتروني",
+    "role": "الدور",
+    "invitations": { "oneTime": "شارك هذا الرمز مع المدعو (عرض مرة واحدة)" }
+  },
+  "patients": {
+    "title": "المرضى",
+    "addPatient": "إضافة مريض",
+    "name": "الاسم",
+    "phone": "الهاتف",
+    "email": "البريد الإلكتروني",
+    "dateOfBirth": "تاريخ الميلاد",
+    "archive": "أرشفة",
+    "search": "البحث عن المرضى..."
+  },
+  "appointments": {
+    "title": "المواعيد",
+    "today": "مواعيد اليوم",
+    "newAppointment": "موعد جديد",
+    "patient": "المريض",
+    "doctor": "الطبيب",
+    "time": "الوقت",
+    "duration": "المدة",
+    "status": "الحالة",
+    "checkIn": "تسجيل الوصول",
+    "cancel": "إلغاء"
+  },
+  "samples": {
+    "title": "العينات",
+    "intake": "استلام عينة",
+    "sampleId": "معرف العينة",
+    "type": "النوع",
+    "submittedBy": "مقدم من",
+    "receivedAt": "تم الاستلام في",
+    "status": "الحالة",
+    "start": "بدء الفحص",
+    "results": "النتائج",
+    "issueReport": "إصدار التقرير"
+  },
+  "audit": { "title": "سجل التدقيق" },
+  "modules": { "title": "الوحدات", "installed": "مثبتة", "available": "متاحة" },
+  "backup": {
+    "title": "النسخ الاحتياطية",
+    "passphrase": "كلمة مرور النسخ الاحتياطي (مطلوبة)",
+    "note": "ملاحظة (اختياري)",
+    "create": "إنشاء ورفع"
+  },
+  "errors": {
+    "notFound": "غير موجود",
+    "forbidden": "محظور",
+    "unauthorized": "غير مصرح",
+    "validation": "مدخلات غير صالحة",
+    "network": "خطأ في الشبكة",
+    "serverError": "خطأ في الخادم"
+  },
+  "auth": {
+    "login": "تسجيل الدخول",
+    "signup": "إنشاء حساب",
+    "email": "البريد الإلكتروني",
+    "password": "كلمة المرور",
+    "forgotPassword": "هل نسيت كلمة المرور؟",
+    "verifyEmail": "تأكيد البريد الإلكتروني"
+  }
+}

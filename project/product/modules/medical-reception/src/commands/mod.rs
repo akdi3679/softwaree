@@ -1,0 +1,11 @@
+pub mod appointment;
+pub mod condition;
+pub mod lab_order;
+pub mod patient;
+pub mod prescription_template;
+pub mod recurring;
+pub mod referral;
+pub mod vaccination;
+pub mod visit;
+pub mod waiting_list;
+pub mod medical_certificate;

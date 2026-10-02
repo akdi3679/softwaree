@@ -1,0 +1,32 @@
+{
+    "name":  "platform-cloud",
+    "version":  "0.0.0",
+    "private":  true,
+    "type":  "module",
+    "engines":  {
+                    "node":  "\u003e=22",
+                    "pnpm":  "\u003e=9"
+                },
+    "packageManager":  "pnpm@9.12.0",
+    "scripts":  {
+                    "build":  "pnpm -r build",
+                    "dev":  "pnpm --filter @cloud/api dev",
+                    "lint":  "biome check .",
+                    "lint:fix":  "biome check --write .",
+                    "test":  "vitest run",
+                    "typecheck":  "tsc -b",
+                    "db:generate":  "drizzle-kit generate",
+                    "db:migrate":  "tsx src/db/migrate.ts",
+                    "db:studio":  "drizzle-kit studio",
+                    "e2e":  "playwright test"
+                },
+    "devDependencies":  {
+                            "@biomejs/biome":  "^1.9.3",
+                            "@types/node":  "^22.7.0",
+                            "drizzle-kit":  "^0.28.0",
+                            "tsx":  "^4.19.0",
+                            "typescript":  "^5.6.3",
+                            "vitest":  "^2.1.4",
+                            "@playwright/test":  "^1.47.0"
+                        }
+}

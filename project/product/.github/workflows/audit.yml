@@ -1,0 +1,31 @@
+name: audit
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/package.json'
+      - '**/pnpm-lock.yaml'
+
+jobs:
+  cargo-audit:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install --locked cargo-audit
+      - run: cargo audit --deny warnings
+
+  pnpm-audit:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level=high

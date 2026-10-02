@@ -1,0 +1,47 @@
+image:
+  repository: product/cloud
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+service:
+  type: ClusterIP
+  port: 8787
+
+database:
+  host: postgres
+  port: 5432
+  name: cloud
+  user: cloud
+
+minio:
+  endpoint: minio.minio.svc.cluster.local:9000
+
+env:
+  NODE_ENV: production
+  LOG_LEVEL: info
+  RATE_LIMIT_PER_ACCOUNT: 600
+  RATE_LIMIT_PER_IP: 60
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+ingress:
+  enabled: true
+  className: nginx
+  host: cloud.product.local
+  tls:
+    enabled: true
+    secretName: cloud-tls

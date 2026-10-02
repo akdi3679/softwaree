@@ -1,0 +1,70 @@
+openapi: 3.1.0
+info:
+  title: Product Cloud API
+  version: 1.0.0
+  description: Cloud control-plane API. Bearer token required.
+servers:
+  - url: https://api.example.com
+    description: Production
+  - url: http://localhost:8787
+    description: Local dev
+security:
+  - bearerAuth: []
+paths:
+  /v1/accounts:
+    post:
+      summary: Create a new account
+      tags: [Auth]
+      security: []
+      responses:
+        '201': { description: Created }
+        '400': { description: Validation failed }
+  /v1/accounts/sessions:
+    post:
+      summary: Sign in
+      tags: [Auth]
+      security: []
+      responses:
+        '200': { description: Signed in }
+  /v1/accounts/me:
+    get:
+      summary: Get current account
+      tags: [Account]
+      responses:
+        '200': { description: Account info }
+  /v1/projects:
+    get:
+      summary: List projects
+      tags: [Projects]
+      responses:
+        '200': { description: Projects }
+    post:
+      summary: Create a project
+      tags: [Projects]
+      responses:
+        '201': { description: Created }
+  /v1/billing/checkout:
+    post:
+      summary: Create Stripe checkout session
+      tags: [Billing]
+      responses:
+        '200': { description: Checkout session }
+  /v1/billing/webhook:
+    post:
+      summary: Stripe webhook receiver
+      tags: [Billing]
+      security: []
+      responses:
+        '200': { description: Received }
+  /health:
+    get:
+      summary: Liveness check
+      security: []
+      responses:
+        '200': { description: OK }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

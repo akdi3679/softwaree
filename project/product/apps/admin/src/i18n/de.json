@@ -1,0 +1,9 @@
+{
+  "common": { "save": "Speichern", "cancel": "Abbrechen", "delete": "Löschen", "edit": "Bearbeiten", "search": "Suchen", "loading": "Lädt...", "error": "Ein Fehler ist aufgetreten", "success": "Erfolg", "confirm": "Bestätigen", "yes": "Ja", "no": "Nein", "today": "Heute", "yesterday": "Gestern", "thisWeek": "Diese Woche", "thisMonth": "Diesen Monat" },
+  "nav": { "dashboard": "Übersicht", "projects": "Projekte", "users": "Benutzer", "patients": "Patienten", "samples": "Proben", "appointments": "Termine", "audit": "Audit-Log", "modules": "Module", "settings": "Einstellungen", "help": "Hilfe", "logout": "Abmelden" },
+  "patients": { "title": "Patienten", "addPatient": "Patient hinzufügen", "name": "Name", "phone": "Telefon", "email": "E-Mail", "dateOfBirth": "Geburtsdatum", "archive": "Archivieren", "search": "Patienten suchen..." },
+  "appointments": { "title": "Termine", "today": "Heutige Termine", "newAppointment": "Neuer Termin", "patient": "Patient", "doctor": "Arzt", "time": "Zeit", "duration": "Dauer", "status": "Status", "checkIn": "Anmelden", "cancel": "Absagen" },
+  "samples": { "title": "Proben", "intake": "Probe annehmen", "sampleId": "Proben-ID", "type": "Typ", "submittedBy": "Eingereicht von", "receivedAt": "Empfangen am", "status": "Status", "start": "Test starten", "results": "Ergebnisse", "issueReport": "Bericht ausstellen" },
+  "errors": { "notFound": "Nicht gefunden", "forbidden": "Verboten", "unauthorized": "Nicht autorisiert", "validation": "Ungültige Eingabe", "network": "Netzwerkfehler", "serverError": "Serverfehler" },
+  "auth": { "login": "Anmelden", "signup": "Registrieren", "email": "E-Mail", "password": "Passwort", "forgotPassword": "Passwort vergessen?", "verifyEmail": "E-Mail bestätigen" }
+}

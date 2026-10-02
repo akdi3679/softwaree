@@ -1,0 +1,13 @@
+[package]
+name = "restaurant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Restaurant: menu, orders."
+
+[dependencies]
+product-module-sdk = { path = "../sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
