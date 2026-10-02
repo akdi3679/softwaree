@@ -1,4 +1,4 @@
-﻿# ---- Rust ----
+# ---- Rust ----
 target/
 **/target/
 Cargo.lock.bak
@@ -29,8 +29,8 @@ secrets/
 .credentials/
 
 # ---- Editor ----
-.vscode/
-!.vscode/extensions.json
+
+
 .idea/
 *.swp
 *.swo
@@ -56,3 +56,15 @@ temp/
 # Inner git backups
 **/.git.bak/
 
+
+# ---- Build caches (generated) ----
+*.tsbuildinfo
+*.log
+!docs/**/*.log
+**/gen/schemas/
+
+# ---- Keep vscode recommendations ----
+
+# VSCode: ignore everything except extensions.json
+**/.vscode/*
+!**/.vscode/extensions.json
