@@ -1,0 +1,6 @@
+/**
+ * Cloud-specific error types.
+ * Populated by CLOUD-ERR-* tasks.
+ */
+export {};
+//# sourceMappingURL=errors.d.ts.map

@@ -1,0 +1,1 @@
+{"version":3,"file":"category.d.ts","sourceRoot":"","sources":["../../src/errors/category.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,CAAC,EAAE,MAAM,KAAK,CAAC;AAExB;;;;;;;;;;;;GAYG;AACH,eAAO,MAAM,aAAa;;;;;;;;;;CAUhB,CAAC;AAEX,MAAM,MAAM,aAAa,GAAG,CAAC,OAAO,aAAa,CAAC,CAAC,MAAM,OAAO,aAAa,CAAC,CAAC;AAE/E,eAAO,MAAM,mBAAmB;;;;;;;;;;EAA8B,CAAC"}

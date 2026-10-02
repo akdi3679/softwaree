@@ -1,0 +1,1 @@
+{"version":3,"file":"project-state.d.ts","sourceRoot":"","sources":["../../src/domain/project-state.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,CAAC,EAAE,MAAM,KAAK,CAAC;AAExB;;;;;;;;;GASG;AACH,eAAO,MAAM,YAAY;;;;;CAKf,CAAC;AAEX,MAAM,MAAM,YAAY,GAAG,CAAC,OAAO,YAAY,CAAC,CAAC,MAAM,OAAO,YAAY,CAAC,CAAC;AAE5E,eAAO,MAAM,kBAAkB;;;;;EAA6B,CAAC"}
