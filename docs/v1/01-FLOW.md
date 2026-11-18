@@ -2,70 +2,144 @@
 
 ## First run (new customer)
 
-1. Install the app (signed installer, no admin rights)
-2. Welcome screen — one paragraph, one button: "Create your lab"
-3. Local signup (works offline, no Cloud needed):
-   - Email, password (Argon2id, 64 MB)
+1. Install the app (signed installer, no admin rights required).
+
+2. Welcome screen — one paragraph, one button: "Create your lab".
+
+3. **Local signup — works offline, no Cloud needed:**
+   - Email
+   - Password (Argon2id, 64 MB memory cost)
    - Admin last name
    - Lab name (business name)
    - Vertical: Food (only option in v1)
-4. Device identity:
-   - App generates Ed25519 keypair
-   - Stored in OS keychain
-   - App derives DB encryption key from keychain + project_id
-5. Project creation:
+
+4. **Device identity and key custody:**
+   - App generates an Ed25519 device keypair, stored in the OS keychain.
+   - App generates a random 32-byte **Project Key**.
+   - Project Key is wrapped twice:
+     - by the OS keychain key (convenience unlock)
+     - by an Argon2id(password) key (recovery factor)
+   - The DB encryption key is derived from the Project Key + project_id.
+
+   > **OPEN DECISION D-2 — what the password unlocks.**
+   > Default in v1: **the password is required to open the project.**
+   > The keychain caches the unwrapped key for the running session only.
+   > Rationale: a food lab under ISO 17025 must not be fully readable by
+   > anyone who sits down at an unlocked Windows session.
+   > Alternative (weaker, faster UX): keychain alone opens the DB and the
+   > password is only a Cloud credential. If you choose this, remove the
+   > password-wrapped copy above and record it in ADR-022.
+
+5. **Project creation:**
    - Project name (e.g. "Lab 2026")
-   - Creates `projects/{id}/project.db` (encrypted, SQLCipher)
-   - Runs migration 001 (11 tables)
-   - Writes project metadata
-6. Cloud registration (async, retryable):
-   - POST /v1/accounts
-   - POST /v1/devices/register (signed with device key)
-   - POST /v1/projects
-   - App continues whether or not this succeeds; retries in background
-7. Plan screen:
-   - One plan: 149 TND / month, 14-day free trial
-   - "Start trial" or "Subscribe now" (Stripe or local PSP)
-8. Module request:
-   - GET /v1/modules/food-lab/package
-   - Server issues license only if trial active or subscription paid
-   - Bundle is signed (`cloud_root` in v1; `project_license` and
-     `device_bind` added in v1.1)
-   - App verifies signature, stores in `projects/{id}/modules/`
-9. Land in the main app:
-   - Dashboard loads
-   - Food-lab module is loaded in Wasmtime (or in-process behind the
-     trait in the first weeks of build; see 04-PHASES.md Phase 3)
-10. Background tasks (start now, run forever):
+   - Creates `projects/{project_id}/project.db` (SQLCipher-encrypted)
+   - Runs migration 001 (15 tables)
+   - Writes `laboratory_settings` + `profiles` (one admin row)
+   - Writes the genesis audit entry (`project.created`, prev_hash = 64 zeros)
+
+6. **Cloud registration — async, retryable, never blocking:**
+   - `POST /v1/accounts`
+   - `POST /v1/devices/register` (public key + signed challenge)
+   - `POST /v1/projects` (metadata only: business_type, admin_last_name,
+     business_name — no business data)
+   - `POST /v1/projects/{id}/escrow` (the **wrapped** Project Key; the
+     Cloud cannot unwrap it without an authorized recovery event)
+   - The app continues whether or not these succeed; retries in background.
+   - Owner side: a row appears in `/ops/signups` and an email is sent.
+
+7. **Plan screen:**
+   - One plan: **149 TND / month**, 14-day free trial
+   - "Start trial" or "Subscribe now"
+
+   > **OPEN DECISION D-3 — payment provider.**
+   > Stripe does not settle TND. Options: (a) bill EUR/USD via Stripe,
+   > (b) Tunisian PSP (Konnect / Paymee / Flouci).
+   > Verify whether the chosen PSP supports **recurring** charges. If it
+   > only supports one-shot payments, v1 uses **prepaid periods + manual
+   > renewal**, which fits the license TTL model with no design change.
+
+8. **Module request and verification:**
+   - `GET /v1/modules/food-lab/versions/{v}/package`
+   - Cloud issues the bundle only if trial active or subscription paid.
+   - **The bundle carries all three signatures:**
+     - `cloud_root` — published by us, binary unmodified
+     - `project_license` — this project is licensed, plan permits it
+     - `device_bind` — bound to this specific device's public key
+   - App verifies all three + the binary SHA-256, then stores it in
+     `projects/{project_id}/modules/`.
+   - Any failure → refuse to load, log a security event, notify Cloud.
+   - **Re-verified at every load**, not just at install.
+
+9. **Land in the main app:**
+   - Dashboard loads.
+   - Food-lab module loads (in-process behind the `LabModule` trait during
+     Phases 3–5; Wasmtime from Phase 6).
+
+10. **Background tasks, start now and run forever:**
     - Check app updates on launch
-    - Refresh license every 7 days (if Cloud unreachable, 7-day grace,
-      then read-only)
-    - Nightly encrypted backup to MinIO
-    - Check for data patches (none in v1; wiring present)
+    - Refresh license every 7 days
+    - Nightly encrypted backup
+    - Check for signed data patches (none in v1; wiring present)
+    - Anchor the audit chain head hash to the Cloud (hash only, no data)
 
 ## Daily use
 
-- Open app → keychain unlock → project.db opens → dashboard
-- Create sample → assign tests → record results → approve → generate
-  report → print/PDF
+- Open app → password → keychain unwrap → `project.db` opens → dashboard
+- Create sample → assign tests → record results → ICMSF verdict →
+  generate report → sign → print/PDF
 - Every write goes through `commands/*.rs`
-- Every write produces one data row + one event + one audit entry,
-  same transaction
-- Cloud is not contacted during daily use (except periodic license
-  refresh and nightly backup)
+- Every write produces data row(s) + event(s) + audit entry, **one transaction**
+- Cloud is not contacted during daily work
 
 ## Cloud offline
 
-- Everything works. Only license refresh and backup pause.
-- 7-day grace. After that, read-only until license refreshes.
-- Read-only = can open, view, print existing reports. Cannot create
-  or edit.
+Everything works. Only license refresh, backup upload, and audit anchoring
+pause.
+
+- License TTL 30 days, refreshed every 7 days.
+- If Cloud unreachable: **7-day grace**, then read-only.
+- Grace is measured against a **monotonic anchor**: the last signed
+  timestamp the app has seen, persisted and never allowed to move
+  backwards. Setting the system clock back does not extend grace.
+
+**Read-only allowlist** (what still works after expiry):
+
+| Allowed                        | Refused                  |
+|--------------------------------|--------------------------|
+| Open app, browse, search       | Create sample            |
+| View samples/results/reports   | Record or edit result    |
+| Print an existing report PDF   | Generate a new report    |
+| Export read-only data          | Sign a report            |
+| Refresh license                | Any write command        |
+
+The customer's data is never held hostage. New work stops; existing work
+remains readable and printable.
+
+## If the laptop dies (recovery)
+
+This flow must work before v1 ships. It is acceptance test #8.
+
+1. Customer installs the app on a new device.
+2. Customer authenticates to the Cloud (account credentials + recovery
+   proof: recovery code or support-verified ownership).
+3. Cloud marks the old device `REPLACED`, the new device `ACTIVE`.
+4. Cloud releases the **wrapped** Project Key to the new device after
+   verification; the access is logged and audited.
+5. New device unwraps the Project Key, re-wraps it to its own keychain
+   key and password key.
+6. New device lists backups: `GET /v1/backups?project_id=...`
+7. Downloads the latest: `GET /v1/backups/{id}`
+8. `restore_from_backup(blob_id)` → decrypt → open → verify audit chain.
+9. Cloud re-issues module bundles bound to the **new** device key.
+10. Customer is back in business. Old device's bundles are inert.
 
 ## Update
 
-- App checks on launch for a new signed binary
-- If available: download, verify signature, prompt, apply on restart
-- Migrations run on start with pre-migration backup
-- Data patches (v1.1+): signed, inspectable (non-critical), refusable
-  (non-critical), audited
-- Failure at any step: rollback to pre-update state
+- App checks on launch for a new signed binary.
+- If available: download → verify signature → prompt → apply on restart.
+- Migrations run on start with a pre-migration snapshot.
+- Data patches: signed, versioned, transactional, audited, dry-run first.
+  Non-critical ones are inspectable and refusable (refusal is audited).
+- Failure at any step before commit → transaction rollback.
+- Failure discovered after commit → **restore the pre-migration snapshot.
+  Never downgrade the binary.** See `03-UPDATES.md`.

@@ -1,30 +1,77 @@
 # v1 Acceptance Criteria
 
-v1 is correct when all 10 pass.
+v1 is correct when all 14 pass. Each one is an automated test or a
+documented manual run, not a claim.
 
-1. Local signup works offline. Cloud not required to start.
-2. Create sample in UI → verify DB has 1 sample + 1 event + 1 audit,
-   same tx.
-3. Call `create_sample` twice with same idempotency key → still 3
-   rows, not 6.
-4. Kill Admin mid-transaction → on restart, no partial state: no
-   event without data, no data without event.
-5. Tamper one audit row → `verify_audit_chain` fails and names the
-   broken sequence.
-6. `rebuild_projection` → drop projection tables, replay events,
-   projection matches pre-rebuild state exactly.
-7. Cloud down → app works fully; license refresh and backup pause;
-   after 7-day grace, read-only (view + print, no writes).
-8. Restore from backup into a fresh DB → same state as backup
-   snapshot, audit chain intact.
-9. Module tamper (flip one byte in the signed bundle) → refuse to
-   load, log security event.
-10. Full lab workflow: intake → tests → results → ICMSF verdict →
-    report → PDF → print, all correct against the existing
-    food-analyse behavior.
+## Platform correctness
 
-## The upgrade test (must pass)
+1. **Offline start.** Local signup and first project creation work with
+   no network. The Cloud is never required to start the app.
 
-v1.1 (User app) can read v1's event log and produce a correct
-projection without a data migration. If it can't, v1 is not a true
-subset — fix v1 before shipping.
+2. **Atomic triple.** Creating a sample in the UI produces exactly
+   1 sample row + 1 event + 1 audit entry + 1 outbox row, in one
+   transaction.
+
+3. **Idempotency.** `create_sample` twice with the same idempotency key
+   leaves the row counts unchanged and returns the stored result payload.
+   Two concurrent identical calls also produce one row.
+
+4. **Crash safety.** Kill the process mid-transaction. On restart there is
+   no event without data and no data without event.
+
+5. **Tamper evidence.** Modify one audit row directly. `verify_audit_chain`
+   fails and names the broken `audit_seq`.
+
+6. **Rebuild-and-diff (the upgrade test).** Replay `events` through
+   `apply_event` into a scratch database. Every domain table matches the
+   live database exactly. This proves v1 is a true subset of the final
+   architecture and that v1.1 needs no data migration.
+
+## Custody and recovery
+
+7. **Cloud offline.** With the Cloud unreachable, all local work continues.
+   After the 7-day grace the app is read-only: browse, view and print
+   existing reports work; every write command is refused.
+
+8. **Restore into a fresh DB.** `restore_from_backup` on an empty database
+   reproduces the snapshot state with an intact audit chain. Then run the
+   full "laptop died" flow: new device, escrow release, re-wrap, download,
+   restore, re-issued bundles.
+
+9. **Clock tampering.** Set the system clock backwards. The license grace
+   period does not extend. The monotonic anchor never moves back.
+
+## Payment gate
+
+10. **Bundle tamper.** Flip one byte in the signed bundle. The app refuses
+    to load it and logs a security event.
+
+11. **Device binding.** Copy a valid bundle to a second device. It refuses
+    to load: `device_bind` fails. This is the test that proves the
+    subscription cannot be shared.
+
+12. **Expiry and renewal.** Let the license expire → read-only. Renew →
+    writes re-enabled without reinstalling anything.
+
+## Domain correctness
+
+13. **ICMSF parity.** For a fixture set covering `presence_absence`,
+    `two_class`, `three_class` and `custom`, and result types numeric,
+    `<`, `>`, ND, detected, TNTC, the Rust `compute_verdict` produces the
+    same verdicts as the existing food-analyse app. `limit_snapshot`
+    contains every required field including `rule_version`.
+
+14. **Correction, not rewrite.** Correct a result that belongs to a signed
+    report. The original result and the original report PDF are unchanged;
+    a new result with `correction_of` and a new report with `supersedes`
+    exist; the old report's status is `superseded`; the audit chain records
+    both events.
+
+## The gate
+
+Test **6** and test **11** are the two that decide whether v1 can grow.
+
+- If 6 fails, v1 is a different architecture and will be rewritten.
+- If 11 fails, v1 has no payment gate.
+
+Do not ship with either failing.
