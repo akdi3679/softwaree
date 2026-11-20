@@ -1,253 +1,352 @@
 # ADR-010: Roll-Our-Own Auth, No Keycloak / Auth0 / Clerk
 
-**Status:** Accepted
+**Status:** Accepted — amended 2026-11-20
 **Date:** 2026-07-26
+**Amended:** 2026-11-20 — mandatory second factor, opaque invitation tokens, membership certificates (fixes Cloud-offline operation), correct crypto libraries per runtime, X25519 in v1, endpoint corrections, recovery hardened per ADR-022
 **Deciders:** Architecture team
+**See also:** ADR-012 (permissions + certificates), ADR-013 (owner console), ADR-014 (licensing), ADR-022 (key custody + recovery)
 
 ---
 
 ## Context
 
-The platform needs authentication and authorization. The natural question is: do we use an off-the-shelf identity provider (Keycloak, Auth0, Clerk, WorkOS) or build our own?
+The platform needs authentication and authorisation. Do we use an off-the-shelf identity provider (Keycloak, Auth0, Clerk, WorkOS) or build our own?
 
-Our auth requirements are unusual:
+Our requirements are unusual:
+
 - Account-level identity (Cloud-managed)
-- Device-level identity (cryptographic keypair per device)
+- Device-level identity (cryptographic keypairs per device)
 - Project membership (Cloud-managed)
 - Project-level roles and permissions (Admin-managed)
 - Admin device authority (one per project)
 - Admin device replacement (Cloud-mediated)
 - Challenge-response authentication, not password-based
-- Mutual authentication (both sides prove identity)
-- No web login flow in the traditional sense (this is a desktop app, not a website)
+- Mutual authentication
+- **Continued project operation while the Cloud is offline**
+- No traditional web login flow — this is a desktop app
 
-Off-the-shelf identity providers are built primarily for web/SaaS authentication: email + password, OAuth, social login, SAML, OIDC. They have weak support for "device per project" patterns and would require extensive customization to fit.
+Off-the-shelf providers are built for web/SaaS: email + password, OAuth, social login, SAML, OIDC. They model "device per project" poorly and would need heavy customisation.
+
+---
 
 ## Decision
 
-**We build our own auth service inside `platform-cloud/`.** It is a focused, ~3,000-line service that handles:
+**We build our own auth service inside `platform-cloud/`.** A focused ~3,000-line TypeScript service handling:
 
-- Account CRUD (email + password, optional WebAuthn)
-- Device keypair registry
+- Account CRUD (email + password **plus a mandatory second factor**)
+- Device keypair registry (two keypairs per device)
 - Project membership
-- Invitation tokens
-- Session issuance (short-lived, refreshable)
+- Invitation tokens (opaque, single-use, email-bound, expiring)
+- Session issuance (short-lived, refreshable) — **for Cloud API calls only**
+- **Membership certificates and Admin authority certificates** — long-lived, locally verifiable
 - Challenge-response for device operations
 - Audit log of auth events
 
 We do not use Keycloak, Auth0, Clerk, WorkOS, Firebase Auth, or any other auth-as-a-service product.
 
+---
+
 ## Consequences
 
 ### Positive
-
-- **Fit the model exactly.** Our auth service knows about devices, projects, and roles natively. No mapping layer to OAuth/OIDC abstractions.
-- **Smaller attack surface.** ~3,000 lines of focused Rust or TypeScript we can audit. Keycloak is a 500MB Java app.
-- **No vendor lock-in.** Auth is the most critical component of any platform. Owning it means we can change anything.
-- **No per-user fees.** Auth0/Clerk charge per MAU. At 1M users, that's a real cost. We pay for our own CPU.
-- **Faster iteration.** We can ship a new auth feature in a single PR. No waiting for an external vendor.
-- **Better security model.** Our auth is built around the device identity concept, not web sessions. We can implement mutual authentication, command signing, and per-project session binding natively.
+- **Fits the model exactly.** Devices, projects and roles are native concepts, not mappings onto OAuth abstractions.
+- **Smaller attack surface.** ~3,000 lines of focused TypeScript we can audit. Keycloak is a 500 MB Java application.
+- **No vendor lock-in.** Auth is the most critical component; owning it means we can change anything.
+- **No per-user fees.** Auth0/Clerk charge per MAU. At a million users that is a real cost.
+- **Faster iteration.** A new auth feature is one PR.
+- **Better security model.** Device identity, mutual authentication, command signing and per-project binding are native.
+- **Cloud-offline operation works.** Certificates are verified locally by the Admin, so a Cloud outage does not lock everyone out after 15 minutes.
 
 ### Negative
-
-- **We own the security burden.** Any vulnerability in our auth service is a vulnerability in our product. We must invest in security review, fuzzing, and audit.
-- **No "free" features.** Things Keycloak gives us (social login, SAML, OIDC) we have to build if we ever need them.
-- **We need to hire/contract security expertise.** A "we built our own auth" project without security review is a disaster.
-- **No proven production track record on day one.** Keycloak has been battle-tested for 10+ years. Our auth is new. We mitigate with: security audit before launch, conservative feature set, extensive testing.
-- **More code to maintain.** ~3,000 lines is a lot, but it replaces a 500MB Java app. The trade is favorable.
+- **We own the security burden.** Every vulnerability is ours. Security review, fuzzing and audit are mandatory line items, not optional.
+- **No free features.** Social login, SAML and OIDC would have to be built if ever needed.
+- **We must contract security expertise.** "We rolled our own auth" without external review is a disaster.
+- **No production track record on day one.** Mitigated by an audit before launch, a conservative feature set, and extensive testing.
+- **More code to maintain.** ~3,000 lines replaces a 500 MB Java app. Favourable trade.
 
 ### Neutral
+- We may open-source the service later. Not a v1 priority.
 
-- We can publish our auth service as an open-source library later if it proves valuable. Not a v1 priority.
+---
 
-## Auth Service Architecture
-
-The service is a separate module inside `platform-cloud/`:
+## Auth service architecture
 
 ```
 platform-cloud/
 ├── packages/
-│   ├── auth/              ← our custom auth service
+│   ├── auth/
 │   │   ├── src/
 │   │   │   ├── account.ts
+│   │   │   ├── mfa.ts
 │   │   │   ├── device.ts
 │   │   │   ├── session.ts
 │   │   │   ├── invitation.ts
 │   │   │   ├── challenge.ts
+│   │   │   ├── membership.ts      ← membership + admin authority certificates
+│   │   │   ├── recovery.ts        ← initiation only; approval lives in /ops (ADR-013)
 │   │   │   └── audit.ts
-│   │   ├── schema.sql     ← accounts, devices, sessions, etc.
+│   │   ├── schema.sql
 │   │   └── tests/
 │   └── ...
 └── apps/
-    └── api/               ← Hono API, imports auth package
+    └── api/                       ← Hono API, imports the auth package
 ```
 
-The service exposes a small, versioned API:
-- `POST /v1/accounts` — create account
-- `POST /v1/accounts/sessions` — login (returns session)
-- `POST /v1/accounts/sessions/refresh` — refresh
-- `POST /v1/devices` — register device (with public key)
-- `POST /v1/devices/{id}/challenge` — get auth challenge
-- `POST /v1/devices/{id}/verify` — submit signed challenge
-- `POST /v1/devices/{id}/replace` — replace device (admin flow)
-- `POST /v1/projects/{id}/invitations` — invite user (returns token; encodes role + module access)
-- `POST /v1/invitations/{token}/accept` — accept invitation (creates empty account)
-- `POST /v1/projects/{id}/memberships` — list memberships
-- `POST /v1/projects/{id}/memberships` — admin assigns the pending user to a project + role (after seeing the "waiting" notification)
-- `GET /v1/audit/auth` — auth audit log
+### Public endpoints (auth surface)
+
+```
+POST   /v1/accounts                                  create account
+POST   /v1/accounts/sessions                         login (password + second factor)
+POST   /v1/accounts/sessions/refresh                 refresh session
+POST   /v1/accounts/sessions/revoke                  logout / revoke
+POST   /v1/accounts/mfa/enroll                       enroll WebAuthn or TOTP
+POST   /v1/devices/register                          register device (both public keys)
+POST   /v1/devices/{id}/challenge                    get auth challenge
+POST   /v1/devices/{id}/verify                       submit signed challenge
+POST   /v1/devices/{id}/replace                      replace device (Admin flow)
+POST   /v1/devices/{id}/revoke                       revoke device
+POST   /v1/projects/{id}/invitations                 invite user (opaque token)
+POST   /v1/invitations/{token}/accept                accept invitation (empty account)
+GET    /v1/projects/{id}/memberships                 list memberships
+POST   /v1/projects/{id}/memberships                 Admin assigns pending user to project + role
+DELETE /v1/projects/{id}/memberships/{userId}        remove membership
+POST   /v1/projects/{id}/module-access               Admin syncs the coarse module-access list
+GET    /v1/membership-certificate                    fetch this device's membership certificate
+GET    /v1/admin-authority-certificate               fetch the project's Admin authority certificate
+POST   /v1/recovery/initiate                         start account/Admin recovery (ADR-022)
+GET    /v1/audit/auth                                auth audit log
+```
+
+Recovery **approval** is a staff action and lives on the private channel `/ops/*` (ADR-013). It is deliberately not reachable from the public API.
+
+---
 
 ## The empty-account pattern
 
-Per the user's goal: *"he can let user to added by make them signup on the signup page but with id of this user becayse its created as empty, then if pc admin open or live it will receive the data"*.
+Per the user's goal: *"he can let user to added by make them signup on the signup page but with id of this user becayse its created as empty, then if pc admin open or live it will receive the data."*
 
-A user cannot self-onboard. The flow is:
+A user cannot self-onboard.
 
-1. Admin issues an invitation. The token encodes the role + module access the Admin is pre-granting.
-2. User goes to the signup page and enters the token.
-3. Cloud creates an **empty account** — has credentials, has no project membership, no data, no role assignment yet.
-4. Account sits in a `pending_pickup` state.
-5. When the Admin comes online, the Admin sees "1 new user waiting to be assigned" in their Users page.
-6. Admin assigns the user to a project + role + module access (defaulting to what was on the invitation).
-7. The user is now a real member. Their User app transitions from "Waiting for Admin" to the normal project view.
+1. Admin issues an invitation. The token is **opaque** (256 bits of CSPRNG entropy, base32-encoded), **single-use**, **bound to the invited email address**, and **expires** (default 7 days). The pre-granted role and module access are stored **server-side against the token record** — never encoded inside the token.
+2. User opens the signup page and enters the token.
+3. Cloud validates: token exists, unused, unexpired, email matches. It creates an **empty account** — credentials plus a mandatory second factor, no project membership, no data, no role.
+4. The account sits in `pending_pickup`.
+5. When the Admin is online it shows "1 new user waiting to be assigned".
+6. Admin assigns project + role + module access (defaulting to the invitation's stored values).
+7. Cloud issues the membership certificate; the Admin issues the device-bound module bundles (ADR-007). The User app leaves "Waiting for Admin" and shows the project.
 
-The User cannot access any project data during the `pending_pickup` window. The Cloud enforces this at the auth middleware: pending users cannot make project-scoped API calls. The User app enforces this in the UI: shows only the "Waiting for Admin" screen.
+During `pending_pickup` the User can see nothing. The Cloud enforces this in middleware (no project-scoped calls). The User app enforces it in the UI (only the waiting screen).
 
-Pending users are auto-soft-deleted after 30 days. The Cloud's `corbeille_audit` records this.
+Pending accounts are auto-soft-deleted after 30 days; the Cloud's `corbeille_audit` records it.
 
-## Cryptographic Primitives
+**Why opaque tokens:** a token that encodes role data is a bearer credential carrying its own authority. Anyone who sees it learns the grant, and tampering becomes an attack surface. An opaque, single-use, email-bound, expiring pointer to server-side state has none of those properties.
 
-We use:
-- **Ed25519** for device keypairs (small, fast, well-audited)
-- **X25519** for any future E2E encryption between devices (not v1)
-- **Argon2id** for password hashing (if we ever use passwords for accounts)
-- **AES-256-GCM** for any data encryption needs
-- **SHA-256 / SHA-3** for hashing
+---
 
-All via Rust's `ring` or `aws-ls-crypto` crate, or via `libsodium` bindings. No custom crypto. We use standard libraries, standard algorithms, no "cleverness."
+## Cryptographic primitives
 
-## Session Model
+| Purpose | Algorithm |
+|---|---|
+| Device signing identity | **Ed25519** |
+| Key wrapping (module content keys) and future E2E | **X25519** |
+| Password hashing | **Argon2id** (≥ 64 MB memory cost) |
+| Password-derived wrapping key (device replacement, recovery codes) | **Argon2id** → HKDF-SHA-256 |
+| Data encryption | **AES-256-GCM** |
+| Hashing | **SHA-256** |
+| Canonicalisation for signing | **JCS (RFC 8785)** |
 
-Sessions are short-lived (15 minutes) and refreshable (rolling). The session token is a JWT signed by the auth service with a short TTL. Refresh tokens are stored server-side and can be revoked.
+Libraries, per runtime:
+- **Cloud (Node/TypeScript):** `node:crypto` and `libsodium-wrappers`.
+- **Apps (Rust):** `ring` or **`aws-lc-rs`**, and `serde_jcs` for canonical JSON.
 
-For device operations, the session must include the device ID. The auth service checks that the session's device matches the device making the request.
+No custom crypto. Standard libraries, standard algorithms, no cleverness.
 
-For project operations, the session includes a `current_project_id`. The auth service checks that the account has membership in the project.
+**Each device generates two keypairs at first launch:**
+- **Ed25519** — signing identity. Never used for encryption or key derivation.
+- **X25519** — encryption. Receives wrapped module Content Keys (ADR-007, ADR-011).
 
-## Password Authentication (Account-Level)
+Both public keys are registered. Both private keys live in the OS keychain and are non-exportable where the platform allows it. A signing key cannot perform key agreement, and reusing one key for two purposes is a defect, not an optimisation (ADR-022).
 
-We allow email + password as one option for account creation, primarily for the customer to set up their first Admin account. Passwords are hashed with Argon2id with high memory cost (64MB+).
+---
 
-**We strongly recommend** WebAuthn (passkeys) for account login in v1.1+ — this is a better experience and more secure. But we don't force it; some customers will want password fallback.
+## Session model — and why the Cloud going down no longer breaks the product
 
-In all cases, **the customer's account password is never used to derive encryption keys** for project data. Authentication and encryption are separate concerns. (See `01-PRINCIPLES.md` §9 for the key hierarchy.)
+**Cloud sessions are short-lived (15 minutes), refreshable (rolling), and gate Cloud API calls only.** The session token is a JWT signed by the auth service. Refresh tokens are stored server-side and revocable.
 
-## Device Authentication
+**Project operation never depends on a Cloud session.** At enrolment the Cloud signs two long-lived certificates:
 
-Devices have their own keypair, separate from the account. The flow:
+### Membership certificate (one per member device)
 
 ```
-1. Customer creates Admin account (email + password, or WebAuthn)
-2. Customer installs Admin app on their machine
-3. Admin app generates Ed25519 keypair in OS keychain
-4. Admin app connects to Cloud, posts public key + project metadata
-5. Cloud creates device record, links to account, returns device_id
-6. Device is now ACTIVE for that account
+{
+  cert_id, project_id, account_id, device_pubkey,
+  role_ids: [...], module_access: [...],
+  issued_at, valid_until,          // 90 days
+  revocation_epoch,
+  cloud_signature                   // Ed25519, chains to the embedded root
+}
 ```
 
-For subsequent operations:
+### Admin authority certificate (one per project)
+
+```
+{
+  project_id, admin_device_pubkey,
+  issued_at, valid_until,          // 90 days
+  revocation_epoch,
+  cloud_signature
+}
+```
+
+Verification is local:
+- The **Admin** verifies each User's membership certificate against the embedded Cloud root, then enforces the current role/permission tables it owns.
+- The **User** verifies the Admin authority certificate, so it knows it is talking to the real Admin and not an impostor on the mesh.
+
+Revocation:
+- The **Admin revokes locally and immediately** — it is the project authority. The local revocation is recorded in `membership_certs` and takes effect on the next operation (Principle 5).
+- The Cloud's `revocation_epoch` bumps when the Admin next syncs, and at that point the Cloud stops issuing certificates for the revoked member.
+
+Validity maths, stated so there is no hidden contradiction: certificates are valid 90 days; a licence is valid 30 days with a 14-day offline grace (ADR-014). **The licence grace is always shorter than certificate validity**, so during a Cloud outage the licence state — not certificate expiry — is the binding constraint. Certificates never silently expire out from under a working offline project.
+
+Plan 1 is the exception: a perpetual local licence, zero Users, no Cloud dependency after activation (ADR-014, ADR-023).
+
+---
+
+## Password authentication (account level)
+
+Email + password is allowed for account creation, primarily so a customer can set up their first Admin account. Passwords are hashed with Argon2id at a high memory cost (64 MB+).
+
+**A second factor is mandatory on every account from v1.** WebAuthn (passkeys) is preferred; TOTP is the fallback for devices without WebAuthn. Password-only accounts are not permitted. Account takeover is the shortest path to a recovery-flow attack (ADR-022), so this is not optional and not deferred to v1.1.
+
+**The account password is never used to derive project data encryption keys.** Authentication and encryption are separate concerns. The only password-derived *wrapping* key is the optional local unlock/replacement wrapper described in ADR-005 and ADR-022, and it wraps a randomly generated key rather than being the key itself.
+
+---
+
+## Device authentication
+
+```
+1. Customer creates an Admin account (email + password + second factor)
+2. Customer installs the Admin app
+3. App generates Ed25519 + X25519 keypairs in the OS keychain
+4. App connects to the Cloud, posts both public keys + project metadata
+5. Cloud creates the device record, links it to the account, returns device_id
+6. Cloud issues the Admin authority certificate
+7. Device is ACTIVE for that account
+```
+
+Subsequent operations:
 
 ```
 1. Device → Cloud: "I want to do operation X"
 2. Cloud → Device: "Sign this challenge with your private key"
-3. Device → Cloud: signed challenge
-4. Cloud verifies signature
-5. Cloud checks: is this device active? does it have permission for X?
-6. Cloud returns result or error
+3. Device → Cloud: signed challenge (timestamp + nonce bound into the payload)
+4. Cloud verifies the signature, rejects replays
+5. Cloud checks: device ACTIVE? account in good standing? authorised for X?
+6. Cloud returns the result or a typed error
 ```
 
-Mutual authentication (Cloud → Device) happens via TLS during the request. The device verifies the Cloud's certificate via standard PKI (public CAs or our internal CA).
+Mutual authentication (Cloud → device) is via TLS with certificate pinning to our CA. The device does not accept a Cloud certificate merely because a public CA issued it.
 
-## Admin Device Replacement
+---
 
-When the Admin's device changes:
+## Admin device replacement
 
 ```
-1. Current Admin: POST /v1/devices/{id}/replace with new device's public key
-2. Cloud: marks current device as REPLACED
-3. Cloud: marks new device as ACTIVE
-4. Cloud: rotates the project's signing keys (re-issue signatures to all Users)
-5. New device: must re-authenticate with account credentials
-6. New device: re-downloads project data (from local cache or Cloud backup)
+1. Current Admin: POST /v1/devices/{id}/replace with the new device's public keys
+2. Cloud marks the current device REPLACED
+3. Cloud marks the new device ACTIVE
+4. Cloud issues a new Admin authority certificate and bumps revocation_epoch
+5. Cloud re-issues module bundles bound to the new device (ADR-007)
+6. New device authenticates with account credentials + second factor
+7. New device restores project data from the latest backup (ADR-022) or a local copy
+8. Users verify the new Admin authority certificate and resync
 ```
 
-If the current device is lost, the customer contacts support with proof of account ownership. Support initiates a recovery flow with stronger verification (security questions, recovery code, support call).
+If the current device is lost, the customer contacts support. **Recovery follows ADR-022, not a conversation:**
+
+- Re-authentication with the account's second factor (hardware key preferred)
+- A mandatory **waiting period** (default 48 hours)
+- **Out-of-band alerts to every contact on the account**, with a cancel link
+- **Two-staff approval** for any escrow key release
+- A complete, hash-chained audit trail
+- In zero-knowledge mode there is no escrow: the customer's recovery code is the only path
+
+**Security questions are never accepted as proof of anything.** They are the weakest link in every account-takeover story, and they are not part of this system.
+
+---
 
 ## Audit
 
-Every auth event is logged:
-- Account created
-- Login succeeded / failed
-- Device registered
-- Device revoked
-- Password changed
-- Session created
-- Session expired
-- Invitation sent
-- Invitation accepted
-- Admin device replaced
+Every auth event is logged: account created, login succeeded/failed, second factor enrolled/changed, device registered, device revoked, password changed, session created/expired, invitation sent/accepted/expired, membership granted/revoked, certificate issued, Admin device replaced, recovery initiated/approved/denied.
 
-Logs are append-only, hash-chained, and queryable by the customer (read-only) and by our team (for support).
+Logs are append-only, hash-chained (`platform.audit.v1`, JCS — Principle 11), queryable read-only by the customer, and queryable by our staff through the private channel with every access itself audited (ADR-013).
 
-## What We Deliberately Do Not Build in v1
+---
 
-- **OAuth / OIDC provider.** We are not a general identity provider. Our auth is for our own apps.
-- **Social login.** Customer accounts are for our customers, not for the general public. Email + password or WebAuthn is enough.
-- **SAML / SSO.** Enterprise customers may want this in the future. Not v1.
-- **MFA via TOTP.** WebAuthn is better. v1.1+ may add TOTP as fallback for customers without WebAuthn-capable devices.
-- **Self-service account deletion.** We have a soft-delete + hard-delete flow, but it's not customer-facing in v1 (it's a support action).
+## What we deliberately do not build in v1
+
+- **OAuth / OIDC provider.** We are not a general identity provider.
+- **Social login.** Customer accounts are for our customers, not the general public.
+- **SAML / SSO.** Possible enterprise requirement later. Not v1.
+- **TOTP as the primary factor.** WebAuthn is preferred; TOTP ships in v1 only as the fallback second factor.
+- **Self-service account deletion.** Soft-delete + hard-delete exists, but it is a support action in v1 (ADR-013, ADR-016).
+
+---
 
 ## Alternatives Considered
 
 ### Keycloak
-
 **Pros:** mature, feature-complete, open source.
-**Cons:** Java + 500MB runtime; OAuth/OIDC-centric; weak device-identity story; would need a parallel "device auth" service anyway; hard to customize deeply.
-**Rejected because:** we need device identity and project-scoped sessions, which Keycloak doesn't model natively. Mapping our model onto Keycloak's abstractions would be a constant translation tax.
+**Cons:** Java + 500 MB runtime; OAuth/OIDC-centric; weak device-identity story; we would need a parallel device-auth service anyway.
+**Rejected:** mapping our model onto Keycloak's abstractions is a permanent translation tax.
 
 ### Auth0
-
-**Pros:** mature, well-supported.
-**Cons:** per-MAU pricing scales badly; vendor lock-in; limited customization; OAuth-centric.
-**Rejected because:** at 1M users, Auth0's pricing is significant. And we don't need OAuth flows.
+**Pros:** mature, well supported.
+**Cons:** per-MAU pricing scales badly; vendor lock-in; OAuth-centric.
+**Rejected:** pricing at scale, and we do not need OAuth flows.
 
 ### Clerk
-
-**Pros:** great DX, modern.
-**Cons:** same as Auth0 — pricing, lock-in, OAuth-centric.
+**Pros:** great DX.
+**Cons:** same pricing and lock-in issues.
 **Rejected for the same reasons.**
 
 ### WorkOS
-
 **Pros:** enterprise SSO focus.
-**Cons:** enterprise SSO is not our v1 use case; we don't need SAML/OIDC just for our own desktop apps.
-**Rejected because:** we're not building enterprise SSO in v1.
+**Cons:** SSO is not our v1 use case.
+**Rejected:** we are not building enterprise SSO in v1.
 
 ### Supabase Auth
-
-**Pros:** open source, includes Postgres + auth.
-**Cons:** tied to Supabase platform; OAuth-centric; weak device identity.
-**Rejected because:** we already have our own Postgres + Drizzle setup; we don't need Supabase's opinionated stack.
+**Pros:** open source, bundles Postgres.
+**Cons:** tied to the Supabase platform; OAuth-centric; weak device identity.
+**Rejected:** we already run our own Postgres + Drizzle.
 
 ### Ory (Kratos + Hydra)
+**Pros:** flexible, open source.
+**Cons:** still OIDC-centric; device identity would be built on top; operational cost similar to our own focused service.
+**Rejected:** marginal value over a focused in-house service.
 
-**Pros:** open source, more flexible than Keycloak.
-**Cons:** still OAuth/OIDC-centric; more complex; would still need to build device identity on top.
-**Rejected because:** the marginal value over rolling our own is small, and the operational cost of running Ory is similar to running our own focused service.
+---
 
 ## Enforcement
 
-- A linter rule: any code path that touches `accounts` or `devices` tables must go through the `auth` package. Direct SQL is not allowed.
-- The `auth` package has 100% test coverage. Auth code is too critical for partial coverage.
-- Security audit before v1 public launch. Budget allocated.
-- All auth events go to the audit log. The audit log is append-only, hash-chained, and reviewed by our team weekly.
-- The Cloud's signing key (used for module signing) is held in a separate process from the auth service. The auth service does not have access to signing keys. Compromise of auth does not equal compromise of signing.
+- Lint rule: any code touching `accounts` or `devices` goes through the `auth` package. Direct SQL is not allowed.
+- The `auth` package has 100% test coverage. Auth is too critical for partial coverage.
+- External security audit before public launch. Budget allocated.
+- Every auth event goes to the hash-chained audit log, reviewed weekly.
+- The Cloud's module-signing key lives in a separate process (and in production an HSM). **The auth service has no access to signing keys.** Compromise of auth does not equal compromise of signing.
+- The patch-signing key is separate again, offline, with two-person approval (ADR-015).
+- No account can be created or logged into without a verified second factor.
+
+### Tests
+- [ ] Password-only login rejected
+- [ ] Invitation token reused → rejected
+- [ ] Invitation token used with a different email → rejected
+- [ ] Expired invitation → rejected
+- [ ] Token contains no role or permission data (opaque)
+- [ ] `GET /memberships` works; the old duplicate `POST` for listing is gone
+- [ ] Cloud taken offline → Admin + User keep operating well past 15 minutes
+- [ ] Membership certificate with a bad signature → refused locally
+- [ ] Admin revokes a member while the Cloud is offline → access denied immediately
+- [ ] Device registers two keypairs; signing key never used for key agreement
+- [ ] Recovery initiation triggers alerts + waiting period; no release without two staff
+- [ ] Replay of a signed challenge (same nonce) → rejected

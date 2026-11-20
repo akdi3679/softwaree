@@ -1,8 +1,10 @@
 # ADR-009: No Offline Writes in v1
 
-**Status:** Accepted
+**Status:** Accepted — amended 2026-11-20
 **Date:** 2026-07-26
+**Amended:** 2026-11-20 — status name unified to `ADMIN_OFFLINE`, keepalive named distinctly from the other two heartbeats, correct virtual IP, "applied but view catching up" clarified
 **Deciders:** Architecture team
+**See also:** ADR-002 (Admin is truth), ADR-012 (write path), ADR-018 / ADR-020 / ADR-024 (network), SYNC-PROTOCOL
 
 ---
 
@@ -10,149 +12,191 @@
 
 The user stated: *"for now make if admin unreachable cant do any thing on app"* and *"if admin pc close the all operations cant done."*
 
-This is a strong product requirement: when the Admin is offline, the User cannot perform any operation that requires Admin authority. The system should be honest about this — never tell the User "Success" when the authoritative Admin never received the operation.
+When the Admin is offline, the User cannot perform any operation that requires Admin authority. The system must be honest: never tell a User "Success" when the authoritative Admin never received the operation.
 
-The natural design question is: should we support offline writes that sync when the Admin returns?
+The design question: should we support offline writes that sync when the Admin returns?
+
+---
 
 ## Decision
 
-**No offline writes in v1.** A write that cannot reach the Admin is rejected with a clear error. The User sees a UI state of `ADMIN_UNAVAILABLE` and cannot submit forms.
+**No offline writes in v1.** A write that cannot reach the Admin is rejected with a clear error. The User UI enters `ADMIN_OFFLINE` and cannot submit forms.
 
-The only operations that work offline are:
-- Reading previously-cached data (the User's authorized projection)
+Operations that still work while the Admin is offline:
+- Reading previously cached data (the User's authorised projection)
 - Browsing the local UI
-- Composing a draft locally (e.g., typing in a form field) — but the form cannot be submitted
+- Composing a draft locally (typing into a form) — but the form cannot be submitted
+- Exporting the User's own authorised data (Principle 14)
 
-In v2 we may add a per-command offline queue for selected low-risk operations. See "Future work" below.
+In v2 we may add a per-command offline queue for selected low-risk operations. See "Future work".
+
+### Status names (single vocabulary)
+
+| State | Meaning | Writes |
+|---|---|---|
+| `ADMIN_ONLINE` | Session established, keepalives healthy | allowed |
+| `ADMIN_OFFLINE` | Admin reachable recently but now unreachable, or explicitly reported down | refused |
+| `ADMIN_UNKNOWN` | No path to the Admin at all; we cannot tell whether it is up | refused |
+
+These three names are used identically in `01-PRINCIPLES.md` §3, the User UI, and the sync protocol. The error returned by the command-sending function is **`Error::AdminOffline`** (this replaces the older name `AdminUnavailable` everywhere in the document set).
+
+---
 
 ## Consequences
 
 ### Positive
-
-- **Implements the user's stated rule exactly.** No surprises. The User is never told a write succeeded when it didn't.
-- **Massively simpler architecture.** No offline command queue, no conflict resolution, no "merged" state to debug.
-- **No risk of lost data.** If the User can't reach the Admin, the operation is refused. The data on the User's screen is honest.
-- **No need for complex sync protocols.** The User app reads the projection and that's it. No command queue, no replay logic, no idempotency-key tracking on the User side.
-- **Easier to reason about security.** A pending offline command would need to be encrypted, signed, replayed safely, and (importantly) could contain data the user has revoked permission to send. Avoiding that entirely is safer.
+- **Implements the user's rule exactly.** No surprises, no fake success.
+- **Massively simpler architecture.** No offline command queue, no conflict resolution, no merged state to debug.
+- **No risk of lost data.** If the User cannot reach the Admin, the operation is refused.
+- **No replay machinery on the User.** No queue persistence, no queue encryption, no queue migration.
+- **Safer under revocation.** A queued command could carry data the user has since lost permission to send. Avoiding the queue avoids that class of bug.
 
 ### Negative
-
-- **The User app is significantly less useful offline.** If a secretary needs to add a new patient and the Admin is down, they cannot. This is by design.
-- **Requires good UX to communicate the limitation.** A "you can browse, but you cannot edit" state must be clearly visible. The UI must not look "broken" — it must look "intentionally restricted."
-- **Limits some real workflows.** A doctor in a clinic with spotty Wi-Fi would have to retry constantly. We accept this for v1; v2's offline queue is for this.
+- **The User app is much less useful offline.** A secretary cannot add a patient while the Admin is down. This is by design.
+- **Requires deliberate UX.** "You can browse, but you cannot edit" must look intentional, not broken.
+- **Some real workflows suffer.** A clinic with spotty Wi-Fi will retry often. Accepted for v1; the v2 queue exists for exactly this.
 
 ### Neutral
+- The User's local database still contains an `outbox` table, reserved for the future queue. It is **never written to in v1**.
+- The User's `inbox` holds incoming events and works offline against the last delivered data.
+- The Admin is a server process. Running it headless on an always-on mini-PC (ADR-002) removes most of the pain described above without changing this rule.
 
-- The User's local database still has an `outbox` table for future offline queue use, but it's empty in v1.
-- The User's local database has an `inbox` for incoming events, which works offline as long as the last sync delivered the data.
+---
 
-## User-Facing UX
-
-When the Admin is unavailable, the User app shows:
+## User-facing UX
 
 ```
 ┌────────────────────────────────────────────┐
-│ ⚠️  Admin is offline                       │
-│                                             │
+│ ⚠️  Admin is offline                        │
+│                                            │
 │ You can browse your previously-loaded      │
 │ data, but you cannot make changes until    │
 │ the Admin is back online.                  │
-│                                             │
+│                                            │
 │ Last sync: 2 hours ago                     │
 │ Try reconnecting →                         │
 └────────────────────────────────────────────┘
 ```
 
-All write buttons are disabled with tooltips explaining why. Form fields are read-only. The UI is not broken; it is intentionally read-only.
+All write controls are disabled with tooltips explaining why. Form fields are read-only. Typed draft text is preserved locally so nothing is lost when the Admin returns.
 
 When the Admin comes back:
-- The "Admin is offline" banner disappears
+- The banner disappears
 - A toast says "Connected to Admin"
-- Write buttons re-enable
-- Pending operations are processed normally (none in v1, by definition)
+- Write controls re-enable
+- Nothing is auto-submitted (there is no queue in v1)
 
-## Detection: How the User Knows the Admin is Offline
+### One nuance that is NOT a pending write
 
-The User app tracks the Admin's heartbeat:
+With the one-round-trip write path (ADR-012, SYNC-PROTOCOL), the Admin commits the change and replies with the applied sequence. The User's local view then catches up via the event stream.
+
+During that short catch-up window the UI may say **"Saved on Admin — updating your view."** This is not a pending write: the authoritative write **has already committed** on the Admin. It is a local projection lag, and it resolves through the normal event path. If the connection drops before the projection catches up, the write is still durable on the Admin and will arrive on reconnect.
+
+The forbidden state is different: "we accepted your write locally and will tell the Admin later." That never exists in v1.
+
+---
+
+## Detection: how the User knows the Admin is offline
+
+There are **three distinct keepalives** in this platform. They are never referred to by the same name:
+
+| Name | Layer | Interval | Purpose |
+|---|---|---|---|
+| **WireGuard keep-alive** | tunnel | 25 s | Keeps NAT mappings and the tunnel alive (ADR-018) |
+| **Admin session keepalive** | WebSocket, User ↔ Admin | 30 s | Liveness of the Admin session (this ADR) |
+| **Discovery heartbeat** | HTTPS, device → Cloud | 60 s | Publishes the device's observed public IP (ADR-020) |
+
+The User app tracks the **Admin session keepalive**:
 
 ```
-- Persistent WebSocket connection to Admin (when network allows)
-- Heartbeat every 30 seconds
-- 3 missed heartbeats → ADMIN_UNAVAILABLE
-- Successful heartbeat → ADMIN_ONLINE
-- Plus periodic active probe (every 5 min) over a separate channel to detect silent failures
+- Persistent WebSocket connection to the Admin (when a path exists)
+- Admin session keepalive (WS ping) every 30 seconds
+- 3 consecutive missed keepalives → ADMIN_OFFLINE
+- Successful keepalive → ADMIN_ONLINE
+- Plus an active probe every 5 minutes over a separate channel, to catch silent failures
 ```
 
-If the User can't even reach the Admin's network endpoint (WireGuard IP, e.g., 10.0.0.1), it's `ADMIN_UNKNOWN` (not "offline", but "can't tell"). The UI is the same: read-only.
+If the User has no path to the Admin's mesh endpoint at all — the project-namespaced virtual address, e.g. `(proj_a1b2c3, 10.50.0.1)` — the state is `ADMIN_UNKNOWN`: not "the Admin is down", but "we cannot tell". The UI consequence is identical: read-only.
 
-## Why We Don't Trust the User's "Pending" State in v1
+---
 
-In some systems, the User app shows "your change is pending, will sync when Admin is back." We could do this in v1 by:
+## Why we do not trust a "pending" state in v1
 
-1. User fills a form
-2. User clicks Save
-3. Form data is stored locally with status `PENDING_SYNC`
-4. UI shows "Pending — will sync when Admin is back"
-5. When Admin comes back, the local data is sent as a command
+Some systems show "your change is pending, it will sync when the Admin is back". That would require:
 
-The user said no. They want the system to refuse the operation. This is a stronger guarantee. We honor it.
+1. Storing the form data locally with status `PENDING_SYNC`
+2. Showing "Pending" in the UI
+3. Sending it as a command when the Admin returns
+4. Re-authorising at send time (permissions may have changed)
+5. Resolving conflicts against newer Admin state
+6. Encrypting, migrating and recovering the queue
 
-In v1, the form will simply not submit. The user sees "Cannot save while Admin is offline. Please try again when the Admin is back." They can keep their typed data in the form, but they cannot save.
+The user said no. The system refuses the operation instead. That is a stronger, simpler guarantee, and we honour it.
 
-## Why This Is the Right v1 Choice
+In v1 the form simply does not submit. The user sees: *"Cannot save while the Admin is offline. Please try again when the Admin is back."* Their typed text stays in the form.
 
-The alternative (offline writes with a queue) requires solving:
+---
+
+## Why this is the right v1 choice
+
+An offline queue requires solving:
+
 - Idempotency on replay
-- Conflict resolution when the local draft conflicts with Admin state
-- Authorization re-check at sync time (what if permissions changed?)
-- Schema migration for queued commands
+- Conflict resolution against Admin state
+- Authorisation re-check at sync time
+- Schema migration of queued commands
 - Encryption of queued commands at rest
-- Recovery from User app crash mid-queue
-- Recovery from User app uninstall with pending queue
-- UX for "you submitted this 3 days ago, here's what happened"
+- Recovery from a crash mid-queue
+- Recovery from an uninstall with a pending queue
+- UX for "you submitted this three days ago, here is what happened"
 - Testing infrastructure for all of the above
 
-That's a v2 product. v1 ships the honest "you can't write right now" experience, gets the platform out, learns from real usage, then adds offline writes for the operations that actually need them.
+That is a v2 product. v1 ships the honest "you cannot write right now" experience, reaches real users, and then adds offline writes for the operations that genuinely need them.
 
-## Future Work (v2)
+---
 
-When we add offline writes, the design is:
+## Future work (v2)
 
 ```
 Command OfflinePolicy:
-  - LOCAL_ONLY        (e.g., "draft note", no Admin needed)
-  - OFFLINE_QUEUEABLE (e.g., "schedule appointment for tomorrow", low risk)
-  - ADMIN_REQUIRED    (e.g., "issue final lab report", cannot be done offline)
-  - CLOUD_REQUIRED    (e.g., "change plan", cannot be done without Cloud)
+- LOCAL_ONLY        (e.g. "draft note", no Admin needed)
+- OFFLINE_QUEUEABLE (e.g. "schedule appointment for tomorrow", low risk)
+- ADMIN_REQUIRED    (e.g. "issue final lab report", never offline)
+- CLOUD_REQUIRED    (e.g. "change plan", needs the Cloud)
 ```
 
-Each command in the system declares its policy in its contract. The User app queues commands marked `OFFLINE_QUEUEABLE` when Admin is offline; rejects commands marked `ADMIN_REQUIRED`. The Admin re-validates authorization on replay.
+Every command declares its policy in the contract. The User queues `OFFLINE_QUEUEABLE` commands when the Admin is offline and rejects `ADMIN_REQUIRED`. The Admin re-validates authorisation on replay.
 
-This is **not** v1. v1 is no offline writes anywhere.
+This is **not** v1. v1 has no offline writes anywhere.
+
+---
 
 ## Alternatives Considered
 
-### Full offline queue (everything queues when offline)
+### Full offline queue
+**Pros:** maximum offline usability. **Cons:** complexity, conflict resolution, data-loss and security risk, heavy testing burden. **Rejected for v1:** the user explicitly asked for refusal.
 
-**Pros:** maximum offline usability.
-**Cons:** massive complexity; conflict resolution; data loss risk; security risk; testing burden.
-**Rejected for v1 because:** the user explicitly asked for "if admin unreachable, can't do anything."
+### Optimistic local apply + background sync
+**Pros:** instant-feeling UI. **Cons:** tells the user "Success" when the Admin never saw the change. **Rejected:** explicitly forbidden.
 
-### Optimistic local + background sync
+### Local-first with CRDTs
+**Pros:** no offline gap. **Cons:** wrong tool for regulated medical and lab data, and it contradicts Admin-as-authority. **Rejected:** see ADR-002.
 
-**Pros:** UI feels instant.
-**Cons:** violates the user's rule; tells the user "Success" when the Admin never saw the change.
-**Rejected because:** explicitly forbidden by the user.
-
-### Local-first with eventual consistency (CRDTs)
-
-**Pros:** no offline gap.
-**Cons:** wrong tool for the data (medical, financial, regulated).
-**Rejected because:** the user wants Admin as authority, not peer-to-peer.
+---
 
 ## Enforcement
 
-- The User app's command-submission function checks Admin availability before sending. If unavailable, the function returns `Error::AdminUnavailable` and the UI shows the read-only state.
-- The User app's `outbox` table is reserved (exists in schema) but is never written to in v1. A code path that writes to it in v1 is a bug.
-- The User app's local projection write paths are limited to internal system writes (e.g., applying an incoming event from the inbox). The User's UI never writes to the projection directly.
-- A linter rule: no command-handler code in the User app can mark itself "succeeded" without an `ADMIN_OK` response from the Admin.
+- The User's command-submission function checks Admin availability first. If unavailable it returns `Error::AdminOffline` and the UI enters the read-only state.
+- The User's `outbox` table exists in the schema but is never written in v1. Any write to it is a bug caught by a lint rule and a runtime assertion.
+- The User's projection write paths are limited to internal system writes (applying an event from the inbox, applying a snapshot). The UI never writes to the projection directly.
+- Lint rule: no User command handler may report success without a `CommandResponse` carrying an applied sequence from the Admin.
+- The three keepalives are named distinctly in code, metrics and logs. A metric called `heartbeat_*` without a layer prefix fails review.
+
+### Tests
+- [ ] Admin process killed → `ADMIN_OFFLINE` within 3 keepalive intervals
+- [ ] No network path at all → `ADMIN_UNKNOWN`
+- [ ] Writes refused in both states, reads still work
+- [ ] Draft text preserved across the offline period
+- [ ] Admin returns → banner clears, controls re-enable, nothing auto-submits
+- [ ] `outbox` remains empty after a full offline session
+- [ ] Write committed on Admin, connection dropped before projection catch-up → UI shows "Saved on Admin", data arrives on reconnect

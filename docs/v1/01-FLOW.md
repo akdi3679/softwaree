@@ -13,36 +13,42 @@
    - Lab name (business name)
    - Vertical: Food (only option in v1)
 
-4. **Device identity and key custody:**
-   - App generates an Ed25519 device keypair, stored in the OS keychain.
-   - App generates a random 32-byte **Project Key**.
-   - Project Key is wrapped twice:
-     - by the OS keychain key (convenience unlock)
-     - by an Argon2id(password) key (recovery factor)
-   - The DB encryption key is derived from the Project Key + project_id.
+4. **Device identity and key custody (per ADR-022):**
+   - App generates an **Ed25519 signing keypair** (identity, signatures).
+   - App generates an **X25519 encryption keypair** (receives wrapped keys
+     in v1.1; generated now so the bundle format and device registry are
+     stable from day one).
+   - Both private keys stored in the OS keychain. Non-exportable where the
+     platform allows it.
+   - **Project Master Key** = random 32 bytes, stored in the OS keychain.
+     Wraps `keys/keyring.enc`.
+   - **Project DB Key** = random 32 bytes, inside keyring. SQLCipher key.
+     **Never derived from a signing key.** (ADR-022, ADR-005)
+   - **Backup Key** = random 32 bytes per backup, AES-256-GCM.
+     In v1 (assisted mode only): wrapped by the Cloud's Escrow Key.
+     Zero-knowledge mode is not offered in v1.
+   - The password authenticates the account and unlocks the app session.
+     **It derives no encryption key.** It wraps a copy of the keyring via
+     Argon2id for device-replacement recovery only. (ADR-010, ADR-022)
 
-   > **OPEN DECISION D-2 — what the password unlocks.**
-   > Default in v1: **the password is required to open the project.**
-   > The keychain caches the unwrapped key for the running session only.
-   > Rationale: a food lab under ISO 17025 must not be fully readable by
-   > anyone who sits down at an unlocked Windows session.
-   > Alternative (weaker, faster UX): keychain alone opens the DB and the
-   > password is only a Cloud credential. If you choose this, remove the
-   > password-wrapped copy above and record it in ADR-022.
-
+   > **D-2 RESOLVED by ADR-022.** The password is required to open the app;
+   > the OS keychain supplies the device key. Two independent gates.
+   > Auth and encryption stay separate. The unwrapped database key is held
+   > for the running session only and never written to disk.
+   
 5. **Project creation:**
    - Project name (e.g. "Lab 2026")
    - Creates `projects/{project_id}/project.db` (SQLCipher-encrypted)
-   - Runs migration 001 (15 tables)
+   - Runs migration 001 (17 tables)
    - Writes `laboratory_settings` + `profiles` (one admin row)
    - Writes the genesis audit entry (`project.created`, prev_hash = 64 zeros)
 
 6. **Cloud registration — async, retryable, never blocking:**
    - `POST /v1/accounts`
-   - `POST /v1/devices/register` (public key + signed challenge)
+   - `POST /v1/devices/register` (both public keys + signed challenge)
    - `POST /v1/projects` (metadata only: business_type, admin_last_name,
      business_name — no business data)
-   - `POST /v1/projects/{id}/escrow` (the **wrapped** Project Key; the
+   - `POST /v1/projects/{id}/escrow` (the **wrapped Backup Key**; the
      Cloud cannot unwrap it without an authorized recovery event)
    - The app continues whether or not these succeed; retries in background.
    - Owner side: a row appears in `/ops/signups` and an email is sent.
@@ -97,7 +103,7 @@ Everything works. Only license refresh, backup upload, and audit anchoring
 pause.
 
 - License TTL 30 days, refreshed every 7 days.
-- If Cloud unreachable: **7-day grace**, then read-only.
+- If Cloud unreachable: **14-day grace**, then read-only.
 - Grace is measured against a **monotonic anchor**: the last signed
   timestamp the app has seen, persisted and never allowed to move
   backwards. Setting the system clock back does not extend grace.
@@ -123,10 +129,9 @@ This flow must work before v1 ships. It is acceptance test #8.
 2. Customer authenticates to the Cloud (account credentials + recovery
    proof: recovery code or support-verified ownership).
 3. Cloud marks the old device `REPLACED`, the new device `ACTIVE`.
-4. Cloud releases the **wrapped** Project Key to the new device after
+4. Cloud releases the **wrapped Backup Key** to the new device after
    verification; the access is logged and audited.
-5. New device unwraps the Project Key, re-wraps it to its own keychain
-   key and password key.
+5. New device unwraps the Backup Key, uses it to decrypt the latest backup.
 6. New device lists backups: `GET /v1/backups?project_id=...`
 7. Downloads the latest: `GET /v1/backups/{id}`
 8. `restore_from_backup(blob_id)` → decrypt → open → verify audit chain.

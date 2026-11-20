@@ -1,108 +1,133 @@
 # ADR-004: Global Event Sequence + Per-User Projection Cursor
 
-**Status:** Accepted
+**Status:** Accepted — amended 2026-11-20
 **Date:** 2026-07-26
+**Amended:** 2026-11-20 — sequence is per project, cursor example corrected, range batches with explicit skip reasons, optimistic concurrency only, snapshot is a transport frame, permission-versioned filtering
 **Deciders:** Architecture team
+**See also:** ADR-002 (authority), ADR-005 (one file per project), ADR-008 (snapshots), ADR-012 (permissions + delivery), SYNC-PROTOCOL
 
 ---
 
 ## Context
 
-The Admin must deliver data changes to all interested Users. When a User connects, it must be able to ask for "everything that changed since I last heard from you." We need to decide the sequencing model.
+The Admin must deliver changes to all interested Users. On reconnect a User asks for "everything that changed since I last heard from you." We need a sequencing model that survives authorization changes and long offline periods.
 
 ## Decision
 
-**A single global event sequence on the Admin**, monotonically increasing, paired with **a per-User projection cursor** that tracks the last event each User has applied to its local projection.
+**One global event sequence per project**, monotonically increasing, paired with **a per-member projection cursor**.
+
+The sequence lives in `events` inside that project's `project.db`. A Plan 4 Admin hosting five projects has five independent sequences. They never merge and never share a counter.
 
 ```
-Admin's event log:
+Admin's event log (project proj_a1b2c3):
   1001: PatientCreated(P1)
   1002: PatientUpdated(P1, phone)
-  1003: AppointmentCreated(A1)
-  1004: PatientUpdated(P2, name)
-  1005: UserRoleGranted(U3, patient.read)
+  1003: AppointmentCreated(A1)          ← UserA not authorized
+  1004: PatientUpdated(P2, name)        ← UserA not authorized
+  1005: RoleGranted(U3, patient.read)
 
-UserA's cursor:  1000   (has applied 1001, 1002, 1005 — note: gaps allowed)
-UserB's cursor:  1002
-UserC's cursor:  1000
+UserA's cursor: 1005   (applied 1001, 1002, 1005; 1003–1004 skipped as denied)
+UserB's cursor: 1002
+UserC's cursor: 1000
 ```
 
-When UserA reconnects, it asks "give me events 1003 → 1005 that I'm allowed to see." The Admin filters by current authorization and sends. UserA applies them in order, advances its cursor to 1005.
+When UserC reconnects it asks: *"give me everything after 1000 that I may see."* The Admin filters by **current** authorization and sends one batch covering the range **1001 → 1005**, declaring "this is everything you may see in this range." UserC applies the allowed events in order and advances its cursor to the batch's end sequence, recording denied events as explicitly skipped.
+
+---
+
+## Range batches and cursor semantics
+
+Every `EventBatch` carries `range_start` and `range_end`.
+
+- The cursor advances to `range_end` after the batch is applied.
+- Events inside the range that were not delivered are recorded as skips with a reason:
+  - `denied` — not authorized under current permissions
+  - `module_incompatible` — the member's module version cannot apply this event (ADR-011)
+- **A gap inside a delivered range means "not authorized" or "module update needed", never "lost."**
+- The cursor never advances past a range it has not received.
+- Events missed while offline are delivered on reconnect, or replaced by a snapshot (ADR-008).
+
+This gives three properties:
+- **Replay safety.** Re-requesting "after 1005" never re-delivers a denied event.
+- **Audit clarity.** The User's projection records what it actually saw.
+- **No silent loss.** Every sequence number in a covered range is accounted for.
+
+`permission_version` accompanies every batch. If it is newer than the User's, the User knows a permission change occurred and expects a backfill or purge (ADR-012).
+
+---
 
 ## Consequences
 
 ### Positive
-
-- **Simple to reason about.** The Admin has one log, one sequence. No per-user streams, no fanout matrices.
-- **Authorization re-checked at delivery.** If UserA's `patient.read` for P2 was revoked between event creation (1004) and delivery, UserA does not receive event 1004. The cursor advances only for events actually delivered.
-- **Reordering-safe.** Events are applied in sequence order; idempotency keys prevent double-application.
-- **Gaps are explicit.** If a User was offline during events 1003–1004, they explicitly receive them on reconnect. No silent loss.
-- **Debuggable.** "What did the system do?" is a SQL query on the event log with a known sequence.
+- **Simple to reason about.** One log, one sequence per project. No per-user streams, no fanout matrix.
+- **Authorization re-checked at delivery.** A permission revoked between creation and delivery is honoured.
+- **Ordering-safe.** Events apply in sequence order; idempotency keys prevent double application.
+- **Debuggable.** "What happened?" is a SQL query with a known sequence.
 
 ### Negative
-
-- **Users may have very different cursors.** The Admin must keep track of N cursors. Acceptable — N is at most a few hundred per Admin in practice.
-- **Authorization re-check at delivery is more work than at creation.** Worth it. Otherwise we leak data on permission revocation.
+- **Members have very different cursors.** The Admin tracks N cursors in `user_projections`. N is bounded by the plan's tested ceiling (200 concurrent, ADR-021).
+- **Delivery-time authorization costs more than creation-time.** Worth it — otherwise revocation leaks data.
+- **Skip bookkeeping.** The User stores skip reasons for covered ranges. Small rows, bounded by batch size.
 
 ### Neutral
+- The sequence is **per project**, matching "one project = one Admin = one file".
+- Snapshot delivery does not consume a sequence number (ADR-008).
 
-- The sequence is per-Admin, not per-Database-file. Each project has its own Admin with its own sequence. They never merge.
+---
 
-## Cursor Semantics
+## Conflict resolution
 
-A User's cursor advances **only for events actually applied to its local projection**. If event 1004 is denied (permission revoked), the User's cursor advances past it to 1005 — but 1004 is never in the User's history. This is important for:
+- **All conflicts use optimistic concurrency.** Every command carries `expected_version` for the aggregate it mutates. If the Admin's current version differs, the command is rejected with `ConflictError` including the current version. The User re-reads and retries deliberately.
+- **No last-write-wins. No automatic field merging.** For regulated medical and lab data, a silent overwrite or an auto-merge is unacceptable.
+- The Admin serializes all writes, so "simultaneous" edits are ordered; the second writer always sees a version mismatch.
+- **No offline write conflicts in v1** (ADR-009).
 
-- **Replay safety.** If the User later requests "give me events after 1000," they don't re-receive the denied event.
-- **Audit clarity.** The User's projection log shows what it actually saw, not what it was offered.
+---
 
-Implementation: the User's `last_applied_sequence` is the highest sequence for which it has applied (or explicitly skipped with `denied`) an event.
+## Snapshot strategy
 
-## Conflict Resolution
+If a member's cursor is more than **5,000 events** or **7 days** behind (both configurable per project), the Admin sends a full snapshot of that member's authorized projection at sequence `S`, then deltas from `S + 1`.
 
-This ADR is about sequencing, not conflict resolution per se. But to be complete:
+**The snapshot is a transport frame, not an event.** It is per-member, contains no new fact, and must never enter the global log. There is no `ProjectionSnapshotSent` event type. The User applies it atomically, sets its cursor to `S`, and resumes.
 
-- **Aggregate-level conflicts** (two users edit the same record) are resolved by **optimistic concurrency** (version field). The Admin's write wins. Last-write-wins is the default; the User who loses the conflict sees a clear "your change was overridden" notification.
-- **Field-level conflicts** (User A edits field X, User B edits field Y simultaneously) are merged automatically — both changes apply.
-- **No offline write conflicts in v1.** Per ADR-009.
+Snapshots are also used for **grant backfill** (`scope: "partial"`) when a member gains access to resources they never received. Full mechanics, caching and chunking in ADR-008.
 
-## Snapshot Strategy
-
-If a User's cursor is more than N (configurable, default 5,000) events behind, or more than X days (default 7) behind, the Admin sends a **full snapshot of the User's authorized projection** at the current sequence, then incremental events from there.
-
-The snapshot is itself an event (sequence N+1, type `ProjectionSnapshotSent`). The User applies the snapshot atomically (in a transaction), then continues with the delta.
-
-This is the "Linear pattern" — they ship the whole workspace on first connect, then deltas.
+---
 
 ## Alternatives Considered
 
-### Per-user sequences
+**Per-user sequences.** Natural authorization boundary, but N streams, complex fanout, painful backfill. Rejected: per-member cursor + delivery-time filtering gives the same security at lower cost.
 
-**Pros:** natural authorization boundary; each user gets only the events they should see.
-**Cons:** complex fanout (N streams instead of 1); harder to add a new user; harder to backfill; cursor tracking explodes.
-**Rejected because:** the per-user cursor + authorization re-check at delivery gives us the same security without the operational cost.
+**Per-aggregate sequences.** Localized conflicts, but delivery ordering becomes complex and users think in terms of "everything that changed for my work today". Rejected.
 
-### Per-aggregate sequences
+**Lamport timestamps / vector clocks.** Distributed-safe, but we have one writer per project. Rejected: we do not have the problem they solve.
 
-**Pros:** localized conflict resolution.
-**Cons:** delivery order becomes complex; users care about all their data, not per-aggregate data.
-**Rejected because:** it doesn't match the user's mental model ("show me everything that changed for my work today").
+**CRDTs.** Automatic merge, wrong tool for regulated records, contradicts Admin-as-authority. Rejected (ADR-002).
 
-### Lamport timestamps / vector clocks
+**Last-write-wins.** Simple, and silently destroys clinical data. Rejected.
 
-**Pros:** distributed-safe.
-**Cons:** we have one writer per project (the Admin), so distributed sequencing is overkill.
-**Rejected because:** we don't have the problem Lamport timestamps solve.
+**Snapshot as an event.** One delivery mechanism, but a per-member artifact would pollute the global sequence and appear in other members' ranges. Rejected.
 
-### CRDTs
-
-**Pros:** automatic merge, no conflicts.
-**Cons:** wrong tool for the data we have (regulated, financial, medical — not collaborative text).
-**Rejected because:** see ADR-002.
+---
 
 ## Enforcement
 
-- The `events` table has `sequence BIGINT PRIMARY KEY` (or composite with `project_id`).
-- A database trigger (or a service-level invariant) prevents gaps in the sequence. Every insert gets the next number atomically.
-- The `user_projections` table has `last_applied_sequence` per user per project.
-- Delivery code re-checks authorization against current `permissions` table, not against a snapshot at event creation time.
-- Snapshot triggers (5,000 events or 7 days) are configurable per project, default values in `platform-cloud/`.
+- `events.sequence` is `INTEGER PRIMARY KEY` within the project file. Allocation is atomic inside the write transaction; a service-level invariant plus a trigger prevents gaps.
+- `user_projections` holds `last_applied_sequence`, `permission_version` and `module_versions` per member.
+- Delivery re-checks authorization against the live `roles` / `role_permissions` / `member_roles` tables — never a snapshot taken at event creation.
+- Every batch declares its range; every non-delivered sequence in that range has a recorded reason.
+- Snapshot thresholds are **project settings persisted in the project config**, with defaults applied at creation. They are not Cloud-side constants.
+- Lint: no code path may insert a snapshot into `events`.
+- Lint: no delivery path may advance a cursor beyond a received `range_end`.
+
+### Tests
+- [ ] Two projects on one Admin → independent sequences, no interference
+- [ ] Denied events → explicit `denied` skips, cursor at `range_end`
+- [ ] Incompatible module → `module_incompatible` skips, update prompt, partial backfill after update
+- [ ] Re-request "after cursor" → no re-delivery of skipped events
+- [ ] Gap of 5,001 events → snapshot; 4,999 → deltas
+- [ ] Snapshot never appears in `events`
+- [ ] Stale `expected_version` → `ConflictError` with current version
+- [ ] Replayed `idempotency_key` → original result, no second event
+- [ ] Concurrent edits to different fields of one record → second writer conflicts, no auto-merge
+- [ ] Permission revoked mid-stream → next batch excludes the resource, `permission_version` bumps

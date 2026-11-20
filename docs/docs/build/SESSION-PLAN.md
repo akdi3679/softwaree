@@ -1,380 +1,125 @@
-# Product v1.0 — AI Session Plan
+# Product v1.0 — AI Session Plan (SUPERSEDED)
 
-> 26 sessions. Each session = 1 AI conversation. Each session = 20-30 micro-tasks.
+> **Status: SUPERSEDED — 2026-11-20**
+> **Superseded by:** `v1/04-PHASES.md` (honest estimate: **7–9.5 weeks**)
+> **Kept for historical context only. Do not execute from this file.**
 
-## Universal session prompt (paste this template, fill in the variables)
+---
+
+## Why this plan was superseded
+
+1. **The estimate was not credible.** "26 sessions × 25 min ≈ 11 hours of AI work" for a platform with a custom auth service, a userspace mesh, a module sandbox, a signing hierarchy, typed patching and a recovery ceremony is off by orders of magnitude. `v1/04-PHASES.md` carries the real estimate.
+2. **It referenced documents that do not exist.** `ADR-005-modules.md`, `TAILNET.md`, `THREAT-MODEL.md` (at the time), `04-DEPLOYMENT.md`, `05-FEATURES.md`, `06-MIGRATIONS.md`, `TAURI-PATTERNS.md`, `SCALING-PATH.md`, `INDEX.md`, `CHECKLIST.md`, and several compliance and runbook files.
+3. **It contradicted v1 scope.** Session 14 and Session 26 list hotel, gym, school, retail, restaurant and invoice modules. **v1 ships exactly two modules:** `medical-reception` and `food-lab`.
+4. **It predates the architecture corrections.** It assumes the Tailscale tailnet, the five-message write handshake, Drizzle in Rust, kernel WireGuard, and 13 principles. All of those have been superseded by ADR-004/005/006/011/012/015/017/018/019/020/024 and the 14-principle set.
+
+---
+
+## Corrected context reading list
+
+Every session must read these, in this order. All of them exist.
+
+```
+1. docs/architecture/00-OVERVIEW.md
+2. docs/architecture/01-PRINCIPLES.md            (14 principles)
+3. docs/architecture/02-DECISIONS/               (ADR-001 … ADR-024)
+4. docs/architecture/SYNC-PROTOCOL.md
+5. docs/architecture/03-STACK.md                 (pins verified at Phase 0)
+6. docs/architecture/THREAT-MODEL.md
+7. docs/architecture/FAILURE-MATRIX.md
+8. docs/architecture/04-GLOSSARY.md
+9. product/AGENTS.md
+10. v1/04-PHASES.md                              (the real plan and estimate)
+```
+
+Key ADRs by work area:
+
+| Work area | Required ADRs |
+|---|---|
+| Repo / CI | 001 |
+| Admin core, events, commands | 002, 004, 005, 012 |
+| Storage, keys, backup, restore | 005, 016, 022 |
+| Modules and module UI | 006, 007, 011 |
+| Sync engine | 004, 008, 009, 012 + SYNC-PROTOCOL |
+| Auth, certificates, invitations | 010, 012 |
+| Networking | 017, 018, 019, 020, 024 |
+| Plans, billing, entitlements | 014, 021 |
+| Owner Console, publishing, approvals | 013 |
+| Live heart / patching | 015 |
+| First run / offline | 023 |
+
+---
+
+## Universal session prompt (still valid)
 
 ```
 You are a senior engineer implementing the Product platform spec.
 
 Context files (read first, in this order):
-1. /workspace/docs/architecture/00-OVERVIEW.md
-2. /workspace/docs/architecture/01-PRINCIPLES.md
-3. /workspace/docs/architecture/02-DECISIONS/ (skim all ADRs)
-4. /workspace/product/AGENTS.md
-5. /workspace/tasks/INDEX.md
+1. docs/architecture/00-OVERVIEW.md
+2. docs/architecture/01-PRINCIPLES.md
+3. docs/architecture/02-DECISIONS/ (all ADRs 001–024)
+4. docs/architecture/SYNC-PROTOCOL.md
+5. docs/architecture/THREAT-MODEL.md and FAILURE-MATRIX.md
+6. product/AGENTS.md
+7. v1/04-PHASES.md and the task index
 
-Your job: implement the following tasks one by one.
+Rules:
+- The doc set wins over the code. Breaking a principle requires an ADR.
+- Never invent a table, frame, key, endpoint or error name. They are all
+  enumerated in ADR-012, ADR-022, SYNC-PROTOCOL and 00-OVERVIEW §2.3.
+- Every task ends with its test command passing.
+
 For each task ID listed:
-  1. Read the task file at /workspace/tasks/<phase>/<TASK_ID>.md
-  2. Create the file(s) exactly as shown in the task spec
-  3. Run the test command at the bottom of the task
-  4. If the test passes, commit with the message shown in the task
-  5. If the test fails, fix the file (do not change the test)
-
-When all tasks are done, write a status report:
-- Which tasks are done
-- Which failed and why
-- What I should look at next
+1. Read the task file
+2. Create the file(s) exactly as specified
+3. Run the test command
+4. If it passes, commit with the given message
+5. If it fails, fix the implementation — never the test
 
 TASKS FOR THIS SESSION:
-<paste the task IDs here>
+<paste task IDs>
 
-START by reading the context files, then implement tasks in order.
+Finish with a status report: done, failed and why, what to look at next.
 ```
 
 ---
 
-## Session 1 — REPO Foundation (22 tasks)
+## Disposition of the original 26 sessions
 
-**Goal**: Scaffold the 3 repos (product, platform-cloud, internal-infra), monorepo tooling, basic CI.
+| # | Original goal | Disposition |
+|---|---|---|
+| 1 | Repo foundation | **Keep** |
+| 2 | Repo tooling | **Keep** — reading list corrected |
+| 3 | Contracts core | **Keep** — add certificate, patch-op, plan-record and permission types |
+| 4 | Contracts sync | **Keep** — 11 frame types, one-round-trip write path |
+| 5 | Contracts SDK | **Keep** |
+| 6 | Cloud backend | **Keep** — add certificates, module-access sync, discovery, relay, recovery initiation |
+| 7 | Admin foundation | **Keep** — SQLCipher, keyring, `rusqlite_migration`, userspace tunnel |
+| 8 | Admin domain | **Keep** — event-first + single `apply_event`, read audit, erasure ledger |
+| 9 | Admin UI | **Keep** |
+| 10 | User app | **Keep** — no command queue |
+| 11 | Sync protocol | **Keep** — rewritten protocol |
+| 12 | medical-reception | **Keep** |
+| 13 | food-lab | **Keep** |
+| 14 | Extra modules + SDK | **Cut.** v1 ships two modules. SDK docs move to 12/13. |
+| 15 | Security + audit | **Keep** — THREAT-MODEL.md now exists |
+| 16 | Observability + backup | **Keep** — custody modes, `sqlcipher_export`, ledger re-apply |
+| 17 | Billing + Stripe | **Keep** — plans-as-data, dunning, read-only allow-list |
+| 18 | Onboarding + email | **Keep** — opaque invitations, mandatory 2FA, recovery alerts |
+| 19 | i18n / a11y / PDF / search | **Keep** — blind indexes for sensitive search |
+| 20 | Performance + comms | **Keep** — `TAILNET.md` replaced by ADR-017…020, 024 |
+| 21 | Compliance + publisher + support | **Keep** — publisher flow is ADR-013, two-person |
+| 22 | Ops console / portal / regions / warehouse | **Split.** Owner Console is in scope (ADR-013). ClickHouse warehouse and multi-region are **post-v1**. |
+| 23 | Migration / events / analytics / arch | **Keep** — architecture docs are now complete |
+| 24 | Chaos + load + release | **Keep** — add patch kill-switch and relay-failure chaos |
+| 25 | Pre-launch | **Keep** |
+| 26 | Operational + final | **Keep** — extra-module tasks removed |
 
-**Tasks**: `REPO-001` to `REPO-022`
-
-**Files to read first**:
-- `/workspace/docs/architecture/03-STACK.md`
-- `/workspace/tasks/repository/README.md` (if exists)
-- `/workspace/product/AGENTS.md` (if exists)
-
-**Files to create**: 22 files under `/workspace/{product,platform-cloud,internal-infra}/`
-
-**Commit message pattern**: `chore(repo): <description>`
-
----
-
-## Session 2 — REPO Tooling (23 tasks)
-
-**Goal**: CI/CD, Docker, dev environment scripts, linters, formatters.
-
-**Tasks**: `REPO-023` to `REPO-045`
-
-**Files to read first**:
-- Session 1 commit history (so you know what was built)
-- `/workspace/docs/architecture/04-DEPLOYMENT.md`
-
----
-
-## Session 3 — CONTRACTS Core (30 tasks)
-
-**Goal**: Branded IDs, envelopes, base types, error types. The shared language.
-
-**Tasks**: `CONTRACT-001` to `CONTRACT-030`
-
-**Files to read first**:
-- `/workspace/docs/architecture/03-STACK.md`
-- `/workspace/docs/architecture/05-FEATURES.md`
-- Existing `product/contracts/` if anything exists
-
-**Files to create**: 30 files in `/workspace/product/contracts/src/`
+**New work not present in the original plan:** ADR-011 module UI sandbox and bridge; ADR-012 grant/revoke lifecycle and certificates; ADR-013 Owner Console; ADR-014 clock anchor and entitlements; ADR-015 typed patch compiler, rings, kill-switch; ADR-016 crypto-shredding, blind indexes, read audit; ADR-022 key hierarchy and recovery ceremony; ADR-023 offline activation; ADR-024 userspace tunnel, hole-punch, blind relay, probe.
 
 ---
 
-## Session 4 — CONTRACTS Sync (30 tasks)
+## Estimate
 
-**Goal**: Sync types, plan definitions, module manifest, signature types.
-
-**Tasks**: `CONTRACT-031` to `CONTRACT-060`
-
-**Files to read first**:
-- `/workspace/docs/architecture/SYNC-PROTOCOL.md`
-- `/workspace/docs/architecture/02-DECISIONS/ADR-005-modules.md` (if exists)
-- Existing `product/contracts/src/sync/` from Session 3
-
----
-
-## Session 5 — CONTRACTS SDK (30 tasks)
-
-**Goal**: Zod schemas, OpenAPI, TypeScript SDK, Cloud client.
-
-**Tasks**: `CONTRACT-061` to `CONTRACT-090`
-
-**Files to read first**:
-- `/workspace/docs/architecture/SYNC-PROTOCOL.md` (sections on frame format)
-- `/workspace/product/contracts/src/` (everything from Sessions 3-4)
-
----
-
-## Session 6 — CLOUD Backend (26 tasks)
-
-**Goal**: Full Hono HTTP API. Accounts, auth, projects, devices, modules, backups, Stripe.
-
-**Tasks**: `CLOUD-001` to `CLOUD-026`
-
-**Files to read first**:
-- `/workspace/docs/architecture/03-STACK.md` (Hono section)
-- `/workspace/docs/architecture/04-DEPLOYMENT.md`
-- `/workspace/product/contracts/src/` (use the types)
-
-**Files to create**: 26 files in `/workspace/platform-cloud/src/`
-
----
-
-## Session 7 — ADMIN Foundation (30 tasks)
-
-**Goal**: Tauri 2 app scaffold, Rust backend, crypto, SQLite, migrations, AppState.
-
-**Tasks**: `ADMIN-001` to `ADMIN-030`
-
-**Files to read first**:
-- `/workspace/docs/architecture/03-STACK.md` (Tauri section)
-- `/workspace/docs/architecture/06-MIGRATIONS.md`
-- `/workspace/product/contracts/src/` (for types)
-
-**Files to create**: 30 files in `/workspace/product/admin/`
-
----
-
-## Session 8 — ADMIN Domain (30 tasks)
-
-**Goal**: Event store, command engine, audit hash chain, outbox dispatcher, user authz.
-
-**Tasks**: `ADMIN-031` to `ADMIN-060`
-
-**Files to read first**:
-- Session 7's commit history
-- `/workspace/docs/architecture/SYNC-PROTOCOL.md` (event envelope section)
-- `/workspace/docs/compliance/HIPAA.md` (audit retention)
-
----
-
-## Session 9 — ADMIN UI (35 tasks)
-
-**Goal**: All React pages: Dashboard, Projects, Users, Patients, Today, Audit, Modules, etc.
-
-**Tasks**: `ADMIN-061` to `ADMIN-095`
-
-**Files to read first**:
-- Session 8 commit history
-- `/workspace/docs/architecture/05-FEATURES.md`
-- `/workspace/docs/architecture/TAURI-PATTERNS.md`
-
----
-
-## Session 10 — USER App (26 tasks)
-
-**Goal**: Tauri user app, read-only projection, sync client, all UI pages.
-
-**Tasks**: `USER-001` to `USER-026`
-
-**Files to read first**:
-- `/workspace/docs/architecture/00-OVERVIEW.md` (the "User = projection" section)
-- Session 9's admin UI (mirror the structure)
-- `/workspace/product/contracts/src/sync/`
-
----
-
-## Session 11 — SYNC Protocol (9 tasks)
-
-**Goal**: WebSocket server, frame validation, snapshot recovery, heartbeat, reconnection.
-
-**Tasks**: `SYNC-001` to `SYNC-009`
-
-**Files to read first**:
-- `/workspace/docs/architecture/SYNC-PROTOCOL.md` (read ALL of it)
-
----
-
-## Session 12 — Medical Module (9 tasks)
-
-**Goal**: medical-reception module — patients, appointments, visits, prescriptions, SOAP notes.
-
-**Tasks**: `MEDICAL-001` to `MEDICAL-009`
-
-**Files to read first**:
-- `/workspace/docs/modules/TUTORIAL.md`
-- `/workspace/docs/modules/COOKBOOK.md`
-- `/workspace/product/modules/sdk/README.md`
-- `/workspace/product/contracts/src/events.ts` (event types)
-
----
-
-## Session 13 — Food Lab Module (8 tasks)
-
-**Goal**: food-lab module — samples, chain of custody, equipment, methods, lab reports.
-
-**Tasks**: `FOODLAB-001` to `FOODLAB-008`
-
-**Files to read first**:
-- Same as Session 12
-
----
-
-## Session 14 — More Modules + SDK (10 tasks)
-
-**Goal**: invoice, hotel, restaurant, retail, gym, school, auto-billing skeleton modules + SDK docs.
-
-**Tasks**: `MODULE-001` to `MODULE-007`, `SDK-001` to `SDK-003`
-
-**Files to read first**:
-- Session 12-13 modules (so you know the pattern)
-
----
-
-## Session 15 — Security + Audit (13 tasks)
-
-**Goal**: Rate limit, security headers, brute-force protection, key rotation, audit chain, GDPR export.
-
-**Tasks**: `SECURITY-001` to `SECURITY-009`, `AUDIT-001` to `AUDIT-004`
-
-**Files to read first**:
-- `/workspace/docs/architecture/THREAT-MODEL.md`
-- `/workspace/docs/compliance/HIPAA.md`
-- `/workspace/docs/compliance/GDPR.md`
-
----
-
-## Session 16 — Observability + Backup (9 tasks)
-
-**Goal**: Prometheus metrics, OTel tracing, log shipper, Grafana dashboard, backup scheduler, restore.
-
-**Tasks**: `OBSERVABILITY-001` to `OBSERVABILITY-004`, `BACKUP-001` to `BACKUP-005`
-
-**Files to read first**:
-- `/workspace/docs/architecture/METRICS.md`
-- `/workspace/docs/runbooks/DR.md`
-
----
-
-## Session 17 — Billing + Stripe (3 tasks)
-
-**Goal**: Stripe live integration, checkout, webhooks, plan enforcement.
-
-**Tasks**: `BILLING-001`, `BILLING-002`, `LAUNCH-002`
-
-**Files to read first**:
-- `/workspace/product/contracts/src/plans.ts`
-- `/workspace/platform-cloud/src/billing/` (from Session 6)
-
----
-
-## Session 18 — Onboarding + Email + Notifications (6 tasks)
-
-**Goal**: Signup flow, email verification, SMTP templates, in-app notification center, web push.
-
-**Tasks**: `ONBOARDING-001`, `ONBOARDING-002`, `EMAIL-001`, `EMAIL-002`, `NOTIFICATIONS-001`, `NOTIFICATIONS-002`
-
-**Files to read first**:
-- `/workspace/docs/launch/FIRST-CUSTOMER.md`
-
----
-
-## Session 19 — UI polish: i18n + A11y + PDF + Search (9 tasks)
-
-**Goal**: 8 languages, focus trap, axe-core, sick-leave cert PDF, lab report PDF, FTS5 search.
-
-**Tasks**: `I18N-001` to `I18N-003`, `A11Y-001`, `A11Y-002`, `PDF-001`, `PDF-002`, `SEARCH-001`, `SEARCH-002`
-
-**Files to read first**:
-- `/workspace/docs/architecture/05-FEATURES.md` (i18n section)
-
----
-
-## Session 20 — Infra: Performance + Scalability + Comm (8 tasks)
-
-**Goal**: Benchmarks, scaling path, mDNS, mDNS-ACL, health checks, cluster heartbeat.
-
-**Tasks**: `PERF-001`, `PERF-002`, `SCALABILITY-001`, `SCALABILITY-002`, `COMM-001` to `COMM-004`
-
-**Files to read first**:
-- `/workspace/docs/architecture/02-DECISIONS/SCALING-PATH.md`
-- `/workspace/docs/architecture/TAILNET.md`
-
----
-
-## Session 21 — Ops: Compliance + Marketplace + Support (8 tasks)
-
-**Goal**: GDPR/HIPAA endpoints, module publisher flow, ops search CLI, support diagnostics.
-
-**Tasks**: `COMPLIANCE-001` to `COMPLIANCE-003`, `MARKETPLACE-001` to `MARKETPLACE-003`, `SUPPORT-001`, `SUPPORT-002`
-
-**Files to read first**:
-- `/workspace/docs/compliance/SOC2-MATRIX.md`
-- `/workspace/docs/marketplace/PUBLISHER.md`
-
----
-
-## Session 22 — Cloud+Portal: Ops console, customer portal, regions, warehouse (9 tasks)
-
-**Goal**: Cloud admin ops console, customer portal React app, country-based region routing, ClickHouse ETL.
-
-**Tasks**: `CLOUD-ADMIN-001`, `CLOUD-ADMIN-002`, `PORTAL-001` to `PORTAL-003`, `MULTI-REGION-001`, `MULTI-REGION-002`, `WAREHOUSE-001`, `WAREHOUSE-002`
-
-**Files to read first**:
-- Session 6 (cloud backend)
-
----
-
-## Session 23 — Polish: Migration + Events + Commands + Analytics + Arch (12 tasks)
-
-**Goal**: v1→v2 plan, event registry, command catalog, KPI dashboard, fill architecture docs.
-
-**Tasks**: `MIGRATION-001`, `MIGRATION-002`, `EVENTS-001` to `EVENTS-003`, `COMMANDS-001`, `COMMANDS-002`, `ANALYTICS-001`, `ANALYTICS-002`, `ARCH-001` to `ARCH-004` (top 4)
-
-**Files to read first**:
-- `/workspace/docs/architecture/INDEX.md`
-- `/workspace/docs/architecture/CHECKLIST.md`
-
----
-
-## Session 24 — Hardening: Chaos + Load + Release (15 tasks)
-
-**Goal**: Chaos tests (kill-mid-write, partition, disk full, etc.), load tests, release process, rollback.
-
-**Tasks**: `CHAOS-001` to `CHAOS-008`, `LOAD-001` to `LOAD-005`, `RELEASE-001`, `RELEASE-002`
-
-**Files to read first**:
-- `/workspace/docs/runbooks/DR.md`
-- `/workspace/docs/runbooks/ROLLBACK.md`
-
----
-
-## Session 25 — Launch: Pre-launch (20 tasks)
-
-**Goal**: OpenAPI 3.1 spec, Stripe webhook hardening, GDPR tests, pen-test template, marketing site, legal templates, status page, onboarding wizard, module harness.
-
-**Tasks**: `LAUNCH-001` to `LAUNCH-020`
-
-**Files to read first**:
-- `/workspace/docs/launch/DAY-1-TO-7.md`
-- `/workspace/marketing/` (if exists)
-
----
-
-## Session 26 — Launch: Operational + Final (21 tasks)
-
-**Goal**: Module depth (retail/gym/school), exit interview, customer template, runbooks, day 1-7 plan, v1.0 tag.
-
-**Tasks**: `LAUNCH-021` to `LAUNCH-041`
-
-**Files to read first**:
-- Session 25 commit history
-- `/workspace/docs/launch/1000.md`
-
----
-
-## After Session 26
-
-- All 1002 tasks done
-- All commits tagged v1.0.0
-- Pen-test the production build (TASK 4-8 weeks)
-- Fix any findings
-- Soft launch with 5 beta customers
-- Public launch
-
-## Total time estimate
-
-- 26 sessions × 25 min average = ~11 hours of AI work
-- If you run 3 sessions in parallel: ~4 hours wall clock
-- Plus human review and integration: 1-2 weeks of part-time work
-- Plus pen-test and beta: 4-8 weeks
-- **Total time to public launch: 6-10 weeks**
+**Superseded.** See `v1/04-PHASES.md`: **7–9.5 weeks** of engineering, plus external security audit and beta. The "~11 hours" figure is retained above only as a record of what was wrong.

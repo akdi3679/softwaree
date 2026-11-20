@@ -39,8 +39,8 @@ Each repo has its own README, its own CI pipeline, its own access control list, 
 
 ### Negative
 
-- **Shared types friction.** When a Cloud API endpoint changes, both `platform-cloud/` and `product/` change. We solve this with the `product/packages/contracts` package, published as a versioned npm package, consumed by both sides.
-- **Two CI pipelines instead of one.** Minor cost; the separation is worth it.
+- **Shared types friction.** When a Cloud API endpoint changes, both `platform-cloud/` and `product/` change. We solve this with the `product/packages/contracts` package, published as a versioned npm package, consumed by `product/` and `platform-cloud/` (and by `internal-infra/` tooling where needed).
+- **Three CI pipelines instead of one.** Minor cost; the separation is worth it.
 - **Harder to refactor across repos.** We accept this — cross-repo refactors should be rare and deliberate (an ADR).
 
 ### Neutral
@@ -58,7 +58,7 @@ Each repo has its own README, its own CI pipeline, its own access control list, 
 ### Two repos: product + cloud-infra
 
 **Pros:** still simple, product is one repo.
-**Cons:** `internal-infra` (Internal-infra (CI, secrets, monitoring) would live inside `platform-cloud`, mixing two concerns.
+**Cons:** `internal-infra` (CI, secrets, monitoring) would live inside `platform-cloud`, mixing two concerns.
 **Rejected because:** the infra layer has a fundamentally different change cadence and ownership model than the Cloud application.
 
 ### Product-as-plugin into Cloud
@@ -70,5 +70,5 @@ Each repo has its own README, its own CI pipeline, its own access control list, 
 ## Enforcement
 
 - CODEOWNERS file in each repo restricts who can approve PRs to what.
-- The `product/packages/contracts` package is the only allowed cross-repo import. It's published as a versioned npm package and consumed by all three.
+- The `product/packages/contracts` package is the only allowed cross-repo import. It's published as a versioned npm package and consumed by product/ and platform-cloud/, and by internal-infra/ tooling where needed.
 - CI in each repo runs architecture tests that fail if unexpected cross-repo dependencies are detected.

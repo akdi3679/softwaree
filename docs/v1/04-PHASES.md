@@ -40,9 +40,10 @@ exists on disk, `cargo check` is clean. The DB is **not encrypted yet**.
 ## Phase 1 — Local identity + project (3–4 days)
 
 - Local signup: email, password (Argon2id 64 MB), lab name, admin last name
-- Ed25519 device keypair in the OS keychain, survives restart
-- Random Project Key, wrapped by keychain key **and** password key
-  (per OPEN DECISION D-2)
+- Ed25519 signing keypair + X25519 encryption keypair in the OS keychain,
+  both survive restart
+- Random Project Master Key in keychain; random Project DB Key inside keyring
+  (ADR-022 — never derived from a signing key)
 - 4-field project creation (project name, admin last name, vertical=food,
   business name)
 - `projects/{project_id}/project.db` created, SQLCipher-encrypted
@@ -68,19 +69,19 @@ restarts.
 - `.env` is actually loaded (this was broken in the earlier draft)
 
 **DoD:** a signup on the customer machine appears in the owner inbox and
-in `/ops/signups`. The wrapped Project Key is stored. Killing the Cloud
+in `/ops/signups`. The wrapped Backup Key is stored. Killing the Cloud
 does not stop the desktop app.
 
 ---
 
 ## Phase 3 — Schema port (2–3 days)
 
-- All **15 tables** from `02-DATA-MODEL.md` in migration 001
+- All **17 tables** from `02-DATA-MODEL.md` in migration 001
 - Platform tables created before domain tables
-- A Rust test inserts one valid row in each of the 15
+- A Rust test inserts one valid row in each of the 17
 - Resolve OPEN DECISION D-1 and record it in `02-DATA-MODEL.md`
 
-**DoD:** 15 tables exist, the insert test passes, `schema_version`
+**DoD:** 17 tables exist, the insert test passes, `schema_version`
 recorded, all CHECK constraints reject an invalid value.
 
 ---
@@ -125,7 +126,7 @@ on one machine, and every write produced data + event + audit in one tx.
 - Compile to `wasm32-wasip2`, load in Wasmtime
 - Bundle with **all three signatures**; signer is a **separate process**
 - Verify at install and at every load; re-verify license state
-- License TTL 30 days, refresh 7 days, grace 7 days, monotonic anchor
+- License TTL 30 days, refresh 7 days, grace 14 days, monotonic anchor
 - Read-only allowlist enforced exactly as `01-FLOW.md`
 - Trial + subscription via the chosen provider (OPEN DECISION D-3)
 - Correction/supersede commands and `rule_version` handling

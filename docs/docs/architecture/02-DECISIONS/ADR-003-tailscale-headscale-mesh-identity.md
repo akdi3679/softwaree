@@ -1,9 +1,11 @@
 # ADR-003: ~~Tailscale + Headscale for Mesh Identity and Networking~~ (SUPERSEDED)
 
+Everything below, including the Enforcement section, is historical. None of it applies to the current system.
+
 **Status:** ~~Accepted~~ → **Superseded** by ADR-017 (pure local networking, no third party) and ADR-018 (stable IP via private mesh)
 
 > **This ADR is kept for historical context only. The recommended approach is now pure local networking (mDNS + WireGuard) with customer-hosted or opt-in relay for cross-network access.**
-
+> **What carries over:** device-key identity, LAN-first discovery, the rejection of IP rotation as a "security feature," and the separation of our team's operations network from the customer mesh (now the ops VPN in ADR-013 — a VPN for *our own staff* is fine; it is not in the customer data path). Everything Tailscale/Headscale-specific is dead.
 ---
 **Date:** 2026-07-26
 **Deciders:** Architecture team

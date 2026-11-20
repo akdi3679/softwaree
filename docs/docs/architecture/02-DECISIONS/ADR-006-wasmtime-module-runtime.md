@@ -1,144 +1,161 @@
 # ADR-006: Wasmtime for the Module Runtime
 
-**Status:** Accepted
+**Status:** Accepted — amended 2026-11-20
 **Date:** 2026-07-26
+**Amended:** 2026-11-20 — no raw DB handle, structured filters instead of raw SQL, JSON-only manifest, bundle directory path, corrected production and licence claims, qualified determinism, UI pointer to ADR-011
 **Deciders:** Architecture team
+**See also:** ADR-007 (signatures + encryption), ADR-011 (bundle + UI contract), ADR-012 (permissions), ADR-015 (updates)
 
 ---
 
 ## Context
 
-Business modules (medical-reception, food-lab, future verticals) must execute inside the Admin and User apps. They need to be:
-- Sandboxed (cannot read other modules' data, cannot escape)
-- Distributable (signed artifacts the Admin downloads)
-- Verifiable (signature + integrity)
-- Capable of the operations we need (DB access, network, UI, computation)
-- Fast enough for a doctor waiting for a patient lookup
-
-We need to pick a runtime.
+Business modules (medical-reception, food-lab, future verticals) execute inside the Admin and User apps. They must be sandboxed, distributable as signed artifacts, verifiable, capable of the operations we need, and fast enough for a doctor waiting on a patient lookup.
 
 ## Decision
 
-**Wasmtime** (Apache-2.0, Bytecode Alliance) as the module runtime, with **WASI Preview 2** as the system interface. Modules are compiled to `wasm32-wasip2` from Rust (or any WASI-compatible language).
+**Wasmtime** (Apache-2.0, Bytecode Alliance) as the module runtime, with **WASI Preview 2** as the system interface. Modules compile to `wasm32-wasip2` from Rust (or any WASI-compatible language).
 
-The host (Admin / User app) embeds Wasmtime via the `wasmtime` Rust crate. Modules are loaded with explicit capability grants derived from the module's manifest.
+The host embeds Wasmtime via the `wasmtime` Rust crate. Modules load with explicit capability grants derived from the manifest. A bundle also carries its **UI** (signed static JS/CSS in a sandboxed iframe) and an encrypted-content slot — see ADR-011.
+
+---
 
 ## Consequences
 
 ### Positive
-
-- **Real sandbox.** Wasmtime enforces memory isolation, no syscalls outside WASI, no ambient access to the host filesystem or network. A module cannot read the Admin's other data unless explicitly granted.
-- **Capability-based security.** WASI Preview 2's "capability-based" model means the module can only do what we grant it. No ambient authority.
-- **Standards compliance.** Wasmtime is the WASI reference implementation. Backed by Mozilla, Fastly, Intel, Microsoft. Long-term support guaranteed.
-- **Production-proven at scale.** Fastly Compute, Shopify Functions, Cloudflare Workers (originally), Envoy proxy filters — all use WASM runtimes in production.
-- **Fast cold start.** ~5ms for typical modules. Fast enough for an interactive desktop app.
-- **Small memory footprint.** ~15MB base runtime. Acceptable for a desktop app.
-- **Rust host integration.** Wasmtime is Rust-first, we can call into it from the Admin's Rust backend with zero FFI quirks.
-- **Deterministic execution.** Same input → same output. Great for testing and replay.
+- **Real sandbox.** Memory isolation, no syscalls outside WASI, no ambient filesystem or network access. A module cannot read another module's data unless granted.
+- **Capability-based security.** WASI Preview 2 grants are explicit. No ambient authority.
+- **Standards compliance.** Wasmtime is the WASI reference implementation, backed by Mozilla, Fastly, Intel and Microsoft, with a published release/LTS cadence.
+- **Production-proven.** Fastly Compute and Shopify Functions run Wasmtime in production; Envoy proxy filters run WASM. *(Cloudflare Workers uses V8 isolates, not Wasmtime — often miscited.)*
+- **Fast cold start.** ~5 ms for typical modules.
+- **Small footprint.** ~15 MB base runtime.
+- **Rust-first host integration.** No FFI quirks.
+- **Deterministic pure computation.** WASM execution is deterministic for a given input; host calls (DB, clock, network) are not. Replay tests record and replay host responses. We do **not** claim end-to-end determinism.
 
 ### Negative
-
-- **WASM is not as fast as native code** in compute-heavy workloads. For our use cases (UI rendering, business logic, DB queries through the host), this is fine. For something like a video codec, it would not be.
-- **WASI Preview 2 is newer.** Some language tooling is still catching up. We mitigate by writing modules in Rust, which has solid WASI Preview 2 support.
-- **Module debugging is harder** than native debugging. We provide good logging via WASI stdout/stderr capture, plus a structured error API.
+- **WASM is slower than native** for compute-heavy work. Fine for business logic and host-mediated queries; wrong for a video codec.
+- **WASI Preview 2 tooling is still maturing.** Mitigated by writing modules in Rust.
+- **Module debugging is harder.** Mitigated by captured WASI stdout/stderr and a structured error API.
 
 ### Neutral
+- No WASM GC needed; Rust ownership suffices.
+- No WASM threads needed; single-threaded per module, multiple instances in parallel.
 
-- We don't need WASM GC (garbage-collected reference types) for our modules. Rust's ownership model is enough.
-- We don't need WASM threads for our modules. Single-threaded per module is fine; multiple modules can run in parallel processes if needed.
+---
 
 ## Why Wasmtime over Wasmer
 
 | | Wasmtime | Wasmer |
 |---|---|---|
-| Backing | Bytecode Alliance (Mozilla, Fastly, Intel, Microsoft), non-profit | Wasmer Inc., commercial |
-| Standards | Reference implementation, full WASI Preview 2 + Component Model | Mostly there, Component Model in progress |
-| Performance | ~5ms cold start, 15MB base | ~8ms cold start, 25MB base (faster with LLVM backend) |
+| Backing | Bytecode Alliance (non-profit) | Wasmer Inc. (commercial) |
+| Standards | Reference implementation, WASI P2 + Component Model | Mostly there |
+| Cold start | ~5 ms | ~8 ms (faster with LLVM backend) |
 | Security | Capability-based, audited | Capability-based, less battle-tested |
-| Package manager | None (we have our own) | WAPM (their own) |
+| Package manager | None (we run our own registry) | WAPM |
 | Production proof | Fastly Compute at scale | Smaller scale |
-| License | Apache-2.0 | MIT |
+| Licence | Apache-2.0 | MIT |
 
 We pick Wasmtime because:
-1. **Security maturity matters more than raw speed** for our use case. A leaked module is exactly the kind of thing we cannot afford.
-2. **Bytecode Alliance's track record** is stronger than Wasmer Inc.'s for the long haul.
-3. **We don't need WAPM** — we have our own module registry in the Cloud.
-4. **Apache-2.0 license** is more enterprise-friendly than MIT for our customer-facing code paths (we have the option to fork if needed without worrying about relicensing).
+1. **Security maturity matters more than peak speed** for regulated data.
+2. **The Bytecode Alliance's track record** is stronger for the long haul.
+3. **We do not need WAPM** — the Cloud runs our module registry.
+4. **Apache-2.0's explicit patent grant** (which MIT lacks) reduces legal risk for enterprise customers. Both are permissive; the patent clause is the real difference.
 
-## Module Loading Flow
+---
+
+## Module loading flow
 
 ```
-1. Cloud publishes module: { id, version, manifest, signed_package_url }
-2. Admin downloads signed_package
-3. Admin verifies triple signature (see ADR-007)
-4. Admin checks plan allows this module for this project
-5. Admin stores module binary in projects/{id}/modules/{name}-{version}.wasm
-6. Admin registers module in module_registry table
-7. When module is invoked:
-   a. Host creates a Wasmtime Store with capability grants
-   b. Host instantiates the module
-   c. Host passes a context object (with DB handle, network handle, etc.)
-   d. Module runs, returns a result
-   e. Host tears down the Store
+1. Cloud publishes a module version: { id, version, manifest, signed_package_url }
+2. Admin downloads the bundle
+3. Admin runs the FULL ADR-007 verification:
+     manifest bundle_hash → cloud_root → cert chain → project_license →
+     device_bind (+ expiry) → ciphertext hash → decrypt → plaintext hash →
+     UI asset hashes → api_version compatibility
+4. Admin confirms the project's licence entitlement (ADR-014)
+5. Admin stores the bundle at:
+     projects/{id}/modules/{module}-{version}/
+       manifest.json, manifest.sig.*, cert_chain.pem, binary.wasm.enc, ui/
+6. Admin registers it in module_registry with verification timestamps
+7. On invocation:
+     a. Host re-verifies signatures, expiry, licence, module access, hashes
+     b. Host creates a Wasmtime Store with the manifest's capability grants
+     c. Host instantiates the module
+     d. Host passes a context object: typed command/query handles and a
+        capability-granted network handle — NEVER a raw DB handle
+     e. Module runs and returns a result
+     f. Host tears down the Store
+8. If the module has UI, the host mounts the sandboxed iframe (ADR-011)
 ```
 
-Modules are short-lived per invocation by default. Long-running modules (e.g., a UI component) can be kept alive as long as the user is interacting with them, then torn down.
+Modules are short-lived per invocation by default. A module backing an open screen may stay alive while the user interacts with it, then is torn down.
+
+---
 
 ## Module API
 
-The host exposes a small, versioned API to modules. Modules don't get direct DB access; they call the host API which enforces authorization:
+The host exposes a small, versioned API. Modules get **no direct database access**; they call host functions that enforce authorization.
 
 ```rust
-// In the module
+// In the module — a command
 host.commands.create_patient(CreatePatientRequest {
     name: "...",
     phone: "...",
 })?
-// Host handles authorization, transaction, event, audit
-// Returns PatientCreatedResult with the new patient ID
+// Host handles authorization, transaction, event, audit.
+// Returns CreatePatientResult with the new patient ID.
 ```
 
 ```rust
-// In the module
+// In the module — a query with a STRUCTURED filter
 host.queries.list_patients(ListPatientsRequest {
-    filter: Some("name LIKE 'A%'"),
+    filter: Some(PatientFilter::NameStartsWith("A".into())),
     limit: 50,
 })?
-// Host filters by current permissions
-// Returns Vec<PatientProjection>
+// Host filters by current permissions.
+// Returns Vec<PatientProjection>.
 ```
 
-The host API is stable per module API version. The module can be recompiled against newer host APIs, and the host advertises which API versions it supports in the manifest.
+**Filters are structured, typed enums — never raw SQL strings.** A raw SQL filter arriving from a module would be an authorization bypass: the module could name another module's tables or project a column it may not read. The host translates declared filters into parameterised SQL against the module's own `mod_<name>_*` tables.
+
+The host API is stable per `api_version`. The host advertises its supported range; the manifest declares what the module was built against. A major mismatch means the module does not load, with a clear "needs a newer app" message (ADR-011).
+
+---
 
 ## Alternatives Considered
 
-### Wasmer
+**Wasmer.** Faster at peak, more SDKs; commercial backing, WAPM lock-in, Component Model behind. Rejected — see table.
 
-**Pros:** faster at peak with LLVM backend, more language SDKs.
-**Cons:** commercial backing with smaller enterprise footprint; WAPM lock-in; Component Model not fully there.
-**Rejected because:** see comparison above.
+**V8 isolates.** ~1 ms cold start, familiar to JS developers; larger memory, harder to call from Rust, no WASI capability equivalent, forces JS. Rejected: our modules are Rust/WASI.
 
-### V8 isolates (like Cloudflare Workers)
+**Native sidecar binaries.** Full performance; no sandbox, one buggy module compromises the host, OS-specific signing. Rejected: the security model collapses.
 
-**Pros:** fastest cold start (~1ms), familiar to JS developers.
-**Cons:** larger memory footprint; harder to call from Rust; no equivalent of WASI capability grants; not as portable.
-**Rejected because:** our modules are not JS; they're Rust (or potentially any WASI language). V8 isolates would force JS.
+**In-process shared library (DLL/.so).** Easy; no isolation, platform-specific, signing much harder. Rejected for the same reason.
 
-### Native sidecar binaries
+**Raw SQL filters for flexibility.** Rejected: it is an authorization bypass, and the flexibility is not needed by either v1 module.
 
-**Pros:** full performance, full power.
-**Cons:** no sandbox; one buggy module = host compromise; signing and binding is harder; OS-specific.
-**Rejected because:** the security model collapses. Defeats the purpose of a module system.
-
-### In-process shared library (DLL / .so)
-
-**Pros:** easy.
-**Cons:** no sandbox, no isolation, native binary is platform-specific, signing is much harder.
-**Rejected because:** same security concerns as sidecar binaries.
+---
 
 ## Enforcement
 
-- The module manifest is a signed YAML/JSON. CI rejects modules without a valid signature.
-- Wasmtime is configured with `wasmtime::Config::new()` that disables all ambient capabilities. The module can only access what we explicitly grant.
-- A linter rule: modules cannot import host functions that aren't declared in the manifest. Unknown imports = compile error.
-- Module execution has a CPU time budget (configurable, default 5s per call). Exceeding it kills the module and logs the violation.
+- The module manifest is **JSON**, canonicalised with JCS (RFC 8785). **No YAML** — canonical hashing requires one deterministic encoding (ADR-007).
+- CI rejects a module without valid signatures and a complete manifest.
+- Wasmtime is configured with all ambient capabilities disabled; only manifest grants are wired.
+- Lint: a module may not import a host function absent from its manifest. Unknown imports fail the build.
+- Lint: no host function accepts a SQL string, a table name, or a column list from a module.
+- Lint: no host function hands out a database connection, file handle, or key.
+- CPU budget 5 s per invocation, memory 64 MB per instance, max 4 concurrent instances (Principle 13). Exceeding a limit kills the instance and logs a security event.
+- Every load re-verifies. A bundle valid at install time may have expired or been revoked since.
+
+### Tests
+- [ ] Module importing an undeclared host function → build failure
+- [ ] Module attempting filesystem access without a grant → denied
+- [ ] Module attempting network access without a grant → denied
+- [ ] Raw SQL string in a filter payload → schema rejection
+- [ ] Module querying another module's tables → denied
+- [ ] Module reading `audit_entries` or `resource_keys` → denied
+- [ ] Infinite loop → killed at 5 s, logged
+- [ ] Memory bomb → killed at 64 MB, logged
+- [ ] Expired `license_expiry` → refuses to load
+- [ ] Unsupported `api_version` → clean message, no crash
+- [ ] YAML manifest → rejected

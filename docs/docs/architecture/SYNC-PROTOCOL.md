@@ -1,192 +1,374 @@
-# Sync Protocol v1 (with Discovery)
+# Sync Protocol v1
 
-> How Admin and User exchange data. Same protocol, different transport
-> depending on what the runtime detects (LAN / direct / discovery / relay).
+> **Status:** Locked
+> **Last updated:** 2026-11-20
+> How Admin and User exchange data. One protocol, several possible transports.
+> **See also:** ADR-004 (sequence), ADR-008 (snapshots), ADR-009 (no offline writes), ADR-012 (permissions + key delivery), ADR-017/018/019/020/024 (network)
 
-## Protocol version
+---
 
-`1`. v1 is the only supported version. v2 is in design.
+## 1. Protocol version
 
-## Stable IP addressing (from ADR-018, ADR-020)
+`1`. v1 is the only supported version. The major version must match exactly; there is no silent fallback. v2 is not designed yet.
 
-Every device has a stable virtual IP from our private range:
+---
 
-| Role | IP |
+## 2. Addressing
+
+Every device has a stable virtual address **inside its project's namespace**, from `10.50.0.0/16`:
+
+| Role | Address within the project |
 |---|---|
 | Admin | `10.50.0.1` |
 | User 1 | `10.50.0.2` |
 | User 2 | `10.50.0.3` |
 | User N | `10.50.0.(N+1)` |
 
-The `/16` range gives us 65,534 addresses per project.
+- An address is always the pair **`(project_id, virtual_ip)`**. A bare IP is never a valid lookup key.
+- The `/16` gives 65,534 usable addresses per project.
+- Addresses are stable for the device's lifetime **within that project**. A device in two projects has two addresses and two tunnels, each with its own local UDP port.
+- **The public key is the identity. The address is not a credential.** Every session is authenticated by the peer's key and certificate.
+- The tunnel runs **in userspace inside the app**. No OS route is touched (ADR-024).
 
-**These IPs are stable for the device's lifetime.** They never change.
+The Admin's sync endpoint inside the tunnel is port **9090** (WebSocket). The WireGuard UDP port is per project (base 51820 + project index).
 
-## Discovery (from ADR-020)
+---
 
-We run a small **discovery service** in our Cloud. It is a "phone book":
+## 3. Transport ladder
 
-- Stores: device pubkey → last known public IP
-- Receives: heartbeats from devices ("I'm at IP Y")
-- Provides: lookups (Admin asks "where is X?")
-- **Never sees data**, only IP metadata
+```
+1. LAN — mDNS service lookup keyed by the device-key fingerprint
+2. Cached direct endpoint (last successful public IP:port)
+3. Discovery lookup — GET /v1/discovery/lookup?project_id=…&virtual_ip=…
+4. Try the returned endpoint
+5. Discovery-coordinated UDP hole-punch — POST /v1/discovery/punch, then poll rendezvous
+6. Relay — customer-hosted, else opt-in blind relay (POST /v1/relay/session)
+     TCP/443 carrier if UDP is blocked
+7. No path → ADMIN_UNKNOWN / ADMIN_OFFLINE on the User
+```
 
-This is the trade-off: we know your real IP, in exchange for easy
-cross-network. Privacy-paranoid customers can opt out (use LAN or
-customer relay instead).
+**LAN is always tried first, before and after any discovery interaction.** The cheapest working path wins. The application layer does not know which path is in use.
 
-## Transport (chosen at runtime)
+---
 
-When a User app wants to reach the Admin (`10.50.0.1:9090`):
-Try LAN first (mDNS) — instant if same network
+## 4. Discovery (metadata only)
 
-If not on LAN, try direct internet (cached last-known IP)
+Our Cloud runs a phone book:
+- Stores **`(project_id, virtual_ip)` → observed public endpoint**, taken from the packet source, never self-reported
+- Receives heartbeats every **60 s** (max 1/min/device)
+- Answers project-scoped, signed, replay-protected lookups
+- Coordinates hole-punching (rendezvous + short-poll, ADR-020)
+- **Never sees data**
 
-If fails, ask discovery: "where is 10.50.0.1?"
+**Honest limit:** a lookup reveals that *device A asked about device B*. That is logged for 30 days and visible to the customer. We never see contents, payloads or durations, and we do not claim zero knowledge of contact intent (ADR-020).
 
-Try the IP discovery returned
+Customers may opt out; LAN, QR/manual pairing and relays still work.
 
-If still fails, device is offline (or IP changed)
+---
 
-text
+## 5. Three keepalives — never called "the heartbeat"
 
-The application doesn't care which method is used. It just sends
-to `10.50.0.1:9090`.
+| Name | Layer | Interval | Failure rule |
+|---|---|---|---|
+| **WireGuard keep-alive** | tunnel | 25 s | 120 s silence → path considered dropped |
+| **Admin session keepalive** | WebSocket, User ↔ Admin | 30 s | 3 missed → `ADMIN_OFFLINE` |
+| **Discovery heartbeat** | HTTPS, device → Cloud | 60 s | 30 min unseen → lookup returns 404 |
 
-## Connection lifecycle
+Plus an active probe every 5 minutes over a separate channel to catch silent failures.
 
-### Step 1: Heartbeat (background, every 60s)
+---
 
-Every device sends a heartbeat to discovery:
+## 6. Connection lifecycle
 
-```http
-POST /v1/discovery/heartbeat
-Headers: X-Device-Id, X-Signature
-Body: {
-  "device_id": "dev_...",
-  "virtual_ip": "10.50.0.1",
-  "current_public_ip": "41.200.50.10",
-  "current_public_port": 51820,
-  "current_ipv6": "2001:db8::42",
-  "state": "internet",  // or "lan", "offline"
-  "reachable_methods": ["direct_v4", "direct_v6"],
-  "timestamp": "2026-08-22T12:00:00Z"
+### Step 1 — `SyncHello` / `SyncAck`
+
+```
+User → Admin: SyncHello {
+  protocol_version: 1,
+  app_version, core_version,
+  project_id, device_pubkey,
+  membership_cert,                 // Cloud-signed, verified locally
+  module_versions: [{module_id, module_version, api_version}],
+  max_frame_size,
+  cursor, permission_version,
+  acked_purge_version?             // confirms the highest contiguous purge applied
 }
-No payload data. No "who I'm talking to". Just IP metadata.
 
-Step 2: Try to reach the peer
-When Admin wants to send to User (10.50.0.2):
+Admin verifies:
+  - certificate signature chains to the embedded Cloud root
+  - certificate not expired, not locally revoked
+  - device is an active member of THIS project
+  - protocol major version == 1
+  - module API compatibility
 
-text
-1. Try mDNS for "10.50.0.2" on current LAN
-   - If found, connect: Admin <-> User over LAN (mDNS+WireGuard)
-   - If not found, go to step 2
+Admin → User: SyncAck {
+  session_id,
+  admin_authority_cert,            // User verifies this too
+  current_sequence,
+  permission_version,
+  module_versions,
+  delivery_mode: "delta" | "snapshot_full" | "snapshot_partial" | "snapshot_module_refresh",
+  max_frame_size
+}
+```
 
-2. Try direct internet (cached IP from last successful connect)
-   - If works, connect
-   - If fails, go to step 3
+Any mismatch → `Error` with a typed code, then close. **Never silent corruption, never a partial handshake.**
 
-3. Ask discovery: GET /v1/discovery/lookup?virtual_ip=10.50.0.2
-   - If 200: got the current IP
-   - If 404: device is offline (not seen in 30 min)
-   - If "no public IP": device opted out
+### Step 2 — `SyncRequest`
 
-4. Try the IP discovery gave
-   - If works, connect, cache the IP
-   - If fails, mark as offline
-Step 3: Data flows directly
-Once connected, data flows Admin ↔ User directly. No discovery
-involvement. WireGuard provides E2E encryption.
+```
+User → Admin: SyncRequest { cursor, permission_version, acked_purge_version? }
+```
 
-text
-Admin                                 User
-  │                                    │
-  │     WireGuard tunnel (E2E)         │
-  │  ◄──────────────────────────────►  │
-  │                                    │
-  │  Discovery (we) is NOT here.       │
-  │  We don't see this traffic.        │
-  │                                    │
-Frame format
+The Admin decides delivery mode via `decide_delivery_mode(member, gap)` (ADR-008) — the only function that may make this choice.
+
+### Step 3 — data flows directly
+
+```
+Admin                                    User
+  │                                       │
+  │      WireGuard tunnel (E2E)           │
+  │ ◄───────────────────────────────────► │
+  │                                       │
+  │  Discovery is NOT in this path.       │
+  │  A blind relay, if used, sees only    │
+  │  ciphertext it cannot read or forge.  │
+```
+
+---
+
+## 7. Frame format
+
 All frames are CBOR-encoded:
 
-text
+```
 ┌─────────────┬─────────────┬────────────────┐
 │ Frame type  │ Payload len │ Payload        │
 │ (1 byte)    │ (4 bytes)   │ (variable)     │
 └─────────────┴─────────────┴────────────────┘
-Frame types:
+```
 
-SyncHello
+**Max frame size: 16 MB.** An over-limit frame is rejected and logged. Larger payloads are chunked.
 
-SyncAck
+| Code | Frame | Direction | Purpose |
+|---|---|---|---|
+| `0x01` | `SyncHello` | U → A | Version + certificate + module negotiation |
+| `0x02` | `SyncAck` | A → U | Agreed versions, session, delivery mode |
+| `0x03` | `SyncRequest` | U → A | Resume from cursor; ack purges |
+| `0x04` | `EventBatch` | A → U | Range-declared events + explicit skips + wrapped keys |
+| `0x05` | `SnapshotPayload` | A → U | Chunked projection snapshot + wrapped keys |
+| `0x06` | `SnapshotRequest` | U → A | Re-request a snapshot or missing chunks |
+| `0x07` | `CommandRequest` | U → A | One-round-trip write |
+| `0x08` | `CommandResponse` | A → U | Applied sequence, or typed error |
+| `0x09` | `Purge` | A → U | Delete revoked resources + their keys |
+| `0x0A` | `SessionKeepalive` | both | 30 s liveness |
+| `0x0B` | `Error` | both | Typed failure, then close if fatal |
 
-EventBatch
+Eleven frame types. There is no `CommandAckGotten`, `CommandApplyRequest`, `CommandApplied` or `CommandApplyConfirm` — the five-message handshake was removed (see §9).
 
-SnapshotPayload
+---
 
-CommandRequest
+## 8. `EventBatch`
 
-CommandAckGotten
+```
+EventBatch {
+  batch_id,
+  range_start, range_end,          // "everything you may see in this range"
+  permission_version,
+  events: [ EventEnvelope ],
+  skipped: [ { sequence, reason: "denied" | "module_incompatible" } ],
+  key_wraps: [ { resource_id, wrapped_key } ],   // sensitive events only;
+                                                 // resource key wrapped to THIS
+                                                 // member's X25519 key (ADR-012 §5)
+  signature                        // Admin device Ed25519 over JCS(payload minus signature)
+}
+```
 
-CommandApplyRequest
+Event envelope (minimum): `sequence`, `resource_type`, `resource_id`, `module_id`, `actor_id`, `project_id`, `event_version`, `payload`, `idempotency_key`, optional `supersedes_event_id`.
 
-CommandApplied
+User rules:
+1. Verify the Admin signature.
+2. Apply events in sequence order through the single `apply_event` function.
+3. Record every skip with its reason.
+4. Set cursor = `range_end`.
+5. Never advance past a range not received.
 
-CommandApplyConfirm
+Max 500 events per batch. Larger gaps are split into consecutive batches, or replaced by a snapshot.
 
-CommandResponse (for error responses or generic acknowledgement)
+---
 
-Heartbeat
+## 9. Write path — one round trip
 
-Error
+There is **no held or pending state on the Admin** (Principle 3), and the User **never applies a write locally**.
 
-Two-Phase Commit Handshake (Write Path)
-The write flow from User to Admin is a four-step handshake to ensure
-Admin is the source of truth and applies before the User.
+```
+1. User → CommandRequest {
+     command_id, idempotency_key, expected_version,
+     module_id, api_version, command_type, payload
+   }
 
-text
-1. User sends a `CommandRequest` to Admin (contains command + idempotency key).
-2. Admin responds `CommandAckGotten` (change held, not applied).
-   Admin does NOT apply yet.
-3. User sends `CommandApplyRequest` (asks Admin to apply).
-4. Admin applies the command in a single transaction (data + event + audit + outbox).
-   Admin then sends `CommandApplied` to the User.
-5. User receives `CommandApplied`, then applies the change locally.
-6. User sends `CommandApplyConfirm` to Admin (optional, for audit).
-   If Admin does not receive confirmation, it relies on the event log to
-   later sync the User if needed.
-If the Admin goes offline after step 2 but before step 4, the User is
-stuck with "pending" but in v1 the UI treats it as an error and
-does not allow further action until Admin reconnects. The User can
-re-send the same CommandRequest with the same idempotency key;
-Admin deduplicates.
+2. Admin: validate → authorize (current permissions) → check expected_version
+          → apply in ONE transaction:
+             event + apply_event + audit + outbox
+          → or reject with a typed error
 
-The Admin's CommandApplied is the definitive success signal.
+3. Admin → CommandResponse { command_id, ok: true, applied_sequence,
+                             aggregate_version }
+   or    → Error { code: "ConflictError", current_version, … }
 
-Encryption
-All frames are inside a WireGuard tunnel. WireGuard provides:
+4. Admin emits the EventBatch containing the new event immediately.
 
-E2E encryption (ChaCha20-Poly1305)
+5. User does NOT apply anything locally. It waits until its projection cursor
+   reaches applied_sequence. The UI shows success only when the projection
+   has caught up. Wire ordering does not matter — the User buffers.
+```
 
-Perfect forward secrecy (keys rotate every 2 minutes)
+**Retries.** Same `idempotency_key` → the Admin returns the original result from `command_log`. No second event.
 
-Replay protection
+**Admin goes offline mid-request.** The User shows `ADMIN_OFFLINE`, never "pending". If the command had already committed, it is durable and arrives on reconnect.
 
-No additional TLS needed
+**Projection lag.** If the cursor has not reached `applied_sequence` within 10 s, the UI says **"Saved on Admin — updating your view."** The authoritative write has committed; this is local lag, not a pending write (ADR-009).
 
-What we never do
-❌ Send sync traffic through our Cloud
-❌ Relay any data through our servers
-❌ Log message contents
-❌ Log "who is talking to whom"
-❌ See sync traffic
-❌ Decrypt anything (we don't have keys)
-❌ Use a third-party VPN (Tailscale, Headscale, etc.)
+**Optimistic concurrency.** A stale `expected_version` → `ConflictError` with the current version. The User re-reads and retries deliberately. No last-write-wins, no auto-merge.
 
-What we DO (the discovery service only)
-✓ Receive heartbeats from devices
-✓ Store: device_id → last known public IP
-✓ Provide lookups: "where is virtual IP X?"
-✓ Forget devices not seen in 7 days
-✓ Allow opt-out (forget IP, no more heartbeats)
+Typed error codes: `ValidationError`, `AuthorizationError`, `ConflictError`, `ModuleVersionMismatch`, `AdminOffline`, `NetworkError`, `FrameTooLarge`, `SnapshotIncomplete`, `VersionMismatch`.
+
+---
+
+## 10. `SnapshotPayload`
+
+```
+SnapshotPayload {
+  snapshot_id, project_id, user_id,
+  sequence, permission_version,
+  scope: "full" | "partial" | "module_refresh",
+  granted_resources?,               // present when scope = partial
+  refresh_module?,                  // present when scope = module_refresh
+  schema_version, projection_format_version,
+  chunk_index, chunk_count,
+  tables: { "proj_*": [ rows ] },
+  keys: [ { resource_id, wrapped_key } ],  // resource keys wrapped to this
+                                           // member's X25519 key (ADR-012 §5)
+  signature                         // over the COMPLETE reassembled payload
+}
+```
+
+- Chunk payload target 8 MB; hard frame limit 16 MB.
+- The User buffers chunks, verifies the signature over the complete payload, then applies **atomically** by scope:
+  - `full` → wipe the projection, insert all rows.
+  - `partial` → insert the listed resources additively; never delete.
+  - `module_refresh` → delete that module's rows, then insert; never touch other modules.
+  Then unwrap and store the `keys`, set cursor = `sequence`, set `permission_version`.
+- Re-applying the same `snapshot_id` is a no-op.
+- Incomplete transfer → `SnapshotRequest` for the missing chunks; after 60 s the User abandons and keeps its old cursor.
+- **A snapshot never enters `events`.**
+
+---
+
+## 11. `Purge`
+
+```
+Purge {
+  purge_id, purge_version, permission_version,   // purge_version is a per-member
+                                                 // monotonic counter
+  scope: "resources" | "resource_type" | "all",
+  resources: [ { resource_type, resource_ids[] } ],
+  signature
+}
+```
+
+The User deletes the matching projection rows **and its local copies of those resources' keys** in one transaction, drops its own cached snapshots for those resources, and acknowledges by carrying `acked_purge_version` (the highest contiguous purge_version applied) in its next `SyncRequest`. Multiple pending purges are all covered this way. If module access was revoked, the bundle and unwrapped content key are deleted and frames closed (ADR-011).
+
+**Honest limit:** purge is best-effort. Data already displayed cannot be un-seen, and a device that never reconnects cannot be reached. What we guarantee: no further delivery, deletion of rows **and keys** on next contact, and an audited revocation record.
+
+---
+
+## 12. Encryption and authentication
+
+All frames travel inside the WireGuard tunnel:
+- ChaCha20-Poly1305 AEAD, Curve25519 key agreement
+- Session keys rotate (≈ every 2 minutes or 2^60 messages)
+- Replay protection via the protocol's counter window
+- No additional TLS is required inside the tunnel
+
+**Precise claim:** a later session-key compromise does not expose earlier sessions. A **static** device-key compromise enables impersonation — which is exactly why device revocation, certificate epochs and the recovery ceremony exist (ADR-010, ADR-022).
+
+**Why payloads are also signed by the Admin device:** WireGuard authenticates the peer on the wire; the Ed25519 signature makes an event batch or snapshot verifiable when it is stored, re-served from cache, or carried by USB sneakernet. Two different jobs, two different mechanisms.
+
+The blind relay never terminates the tunnel and holds no key material. It can drop packets; it cannot read or forge them.
+
+---
+
+## 13. Limits
+
+| Surface | Limit |
+|---|---|
+| Frame | 16 MB |
+| Events per batch | 500 |
+| Snapshot chunk payload | 8 MB target |
+| Command payload | 1 MB |
+| Commands per device | 100 / s |
+| In-flight commands per session | 20 |
+| Command response timeout | 10 s |
+| Snapshot reassembly timeout | 60 s |
+| Concurrent connections per User | 4 |
+| Session keepalive | 30 s (3 missed → offline) |
+
+Every exceeded limit is rejected and logged.
+
+---
+
+## 14. Sneakernet
+
+USB transfer carries **signed `SnapshotPayload` artifacts only**. No commands, no events, no writes cross this path — the single-writer rule is preserved (ADR-002). Import runs the same signature and format verification and applies atomically.
+
+---
+
+## 15. What we never do
+
+- ❌ Send sync traffic through our Cloud
+- ❌ Relay any **readable** data through our servers (the opt-in blind relay forwards only ciphertext — ADR-024)
+- ❌ Log message contents
+- ❌ Log message-level "who is talking to whom" (discovery lookups do reveal lookup intent — disclosed in ADR-020)
+- ❌ Decrypt anything (we hold no device private keys)
+- ❌ Use a third-party VPN
+- ❌ Let the User apply a write locally
+- ❌ Accept a snapshot into the event log
+- ❌ Transmit a resource key in plaintext (always wrapped to the recipient's X25519 key)
+
+## 16. What we do (discovery only)
+
+- ✓ Receive signed heartbeats
+- ✓ Store `(project_id, virtual_ip)` → **observed** public endpoint
+- ✓ Answer project-scoped, replay-protected lookups
+- ✓ Coordinate hole-punching (rendezvous + short-poll)
+- ✓ Forget endpoints after 7 days without heartbeats; lookup logs after 30 days
+- ✓ Honour opt-out immediately
+
+---
+
+## 17. Tests
+
+- [ ] `SyncHello` with protocol major 2 → typed `VersionMismatch`, connection closed
+- [ ] Forged membership certificate → refused at handshake
+- [ ] Forged Admin authority certificate → User refuses to sync
+- [ ] Frame of 16 MB + 1 byte → rejected, logged
+- [ ] Batch with a gap and no skip entry → rejected as a protocol violation
+- [ ] Denied events → explicit skips, cursor at `range_end`
+- [ ] `CommandRequest` retried with the same key → one event, original result
+- [ ] Stale `expected_version` → `ConflictError` with current version
+- [ ] Response arrives before the batch, and after the batch → both resolve correctly
+- [ ] Admin killed after commit, before response → write durable, arrives on reconnect
+- [ ] User never writes a business table during any write path
+- [ ] Snapshot > 16 MB → chunked, reassembled, applied atomically
+- [ ] Interrupted snapshot → old cursor retained, chunks re-requested
+- [ ] Re-applied `snapshot_id` → no-op
+- [ ] `Purge` → rows **and keys** deleted, caches dropped, `acked_purge_version` carried in next `SyncRequest`
+- [ ] Multiple pending purges → both applied; `acked_purge_version` reflects the higher one
+- [ ] LAN chosen when available, even with a working relay
+- [ ] Discovery down → cached endpoint and LAN still work
+- [ ] Both behind cone NAT → rendezvous + punch succeeds, no relay
+- [ ] UDP blocked → TCP/443 carrier syncs
+- [ ] Relay flips a byte → peer rejects the packet
+- [ ] Sneakernet import of a command payload → rejected
+- [ ] Resource key never appears in plaintext on the wire or in a log

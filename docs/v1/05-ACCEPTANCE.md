@@ -30,7 +30,7 @@ documented manual run, not a claim.
 ## Custody and recovery
 
 7. **Cloud offline.** With the Cloud unreachable, all local work continues.
-   After the 7-day grace the app is read-only: browse, view and print
+   After the 14-day grace the app is read-only: browse, view and print
    existing reports work; every write command is refused.
 
 8. **Restore into a fresh DB.** `restore_from_backup` on an empty database
