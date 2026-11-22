@@ -36,9 +36,9 @@ performance claim appears in this document without our own measurement.
 | Database | PostgreSQL | 17+ *(pin major at Phase 0)* | Mature, RLS for control-plane tenant scoping, scales vertically then via replicas |
 | Migrations | Drizzle Kit | *(pin at Phase 0)* | Schema-as-code, same tool as the ORM |
 | Object storage | MinIO | *(pin at Phase 0)* | S3-compatible, self-hosted, no AWS lock-in |
-| **Signing & escrow keys** | **HSM / cloud KMS** | — | Cloud root, signing-service, per-project licence keys, and the assisted-mode Escrow Key (ADR-022). Patch key stays **offline** (ADR-015). |
+| **Signing & escrow keys** | **HSM / cloud KMS** | — | Cloud root, signing-service, per-project licence keys, and the assisted-mode Escrow Key (ADR-022). Escrow keypair algorithm is pinned at Phase 0 (ADR-022 §2). Patch key stays **offline** (ADR-015). |
 | **Email delivery** | SMTP (self-hosted) or Postmark / SES | — | Invitations, recovery alerts, dunning, receipts. Recovery alerts are security-critical, not marketing mail. |
-| **Payments** | **Provider interface** (see §A.1) | — | Stripe, Tunisian PSP, or any provider that implements the interface. Provider choice is D-3, not a stack decision. |
+| **Payments** | **Provider interface** (see §A.1) | — | Stripe, Tunisian PSP, or any provider that implements the interface. Provider choice is open decision **D-3** (tracked in the "Open decisions" section of `v1/README.md`), not a stack decision. |
 | **STUN / probe** | coturn (or equivalent) | *(pin at Phase 0)* | Our own reachability servers — no third party by default (ADR-019) |
 | **Blind relay** | our packet forwarder | — | Opt-in, ciphertext only, no key material, metered per project (ADR-024) |
 | Canonical JSON (TS) | `canonicalize` (JCS, RFC 8785) | *(pin at Phase 0)* | One hash rule with the Rust side (Principle 11) |

@@ -90,8 +90,7 @@ The mesh is **our implementation**. We depend on no third-party mesh, and no thi
 
 ## The discovery flow (operational)
 
-When the Admin wants to reach a User at `(proj_a1b2c3, 10.50.0.2)`:
-
+When a device wants to reach a peer (by default a User dialling the Admin at `10.50.0.1`; the Admin may also dial any member such as `10.50.0.2`), it asks discovery for `(project_id, virtual_ip)`. Example for a User dialling the Admin:
 ```
 1. Try LAN (mDNS service lookup, keyed by the device-key fingerprint)
    - Found → connect over the LAN. Done.
@@ -99,7 +98,7 @@ When the Admin wants to reach a User at `(proj_a1b2c3, 10.50.0.2)`:
 2. Try the cached direct endpoint (last successful public IP:port)
    - Works → connect, refresh the cache. Done.
    - Fails → continue
-3. Ask discovery: "where is (proj_a1b2c3, 10.50.0.2)?"
+3. Ask discovery: "where is (proj_a1b2c3, 10.50.0.1)?"
    - 200 → observed public endpoint + state
    - 404 → not seen in 30 min (treat as offline)
    - "no public IP" → the device opted out

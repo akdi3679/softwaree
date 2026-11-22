@@ -29,12 +29,23 @@ A permission is `module.resource.action` (e.g., `food-lab.sample.create`).
 - Effective permission = **union of all roles** the member holds, evaluated against the live tables on every decision (Principle 5).
 - `module.access` is separate: it decides whether a bundle may be issued and loaded at all.
 
+**Who knows what:**
+
+| Fact | Admin | Cloud |
+|---|---|---|
+| Role catalogue and permission lists | ✅ authoritative | ❌ never |
+| Member → role IDs | ✅ | ✅ (IDs only, informational) |
+| Member → module-access list | ✅ authoritative | ✅ (synced copy, for bundle issuance) |
+| Per-resource permission decisions | ✅ | ❌ |
+
 ### 2. Membership certificates
 
 - The Cloud signs a **membership certificate** per member device and an **Admin authority certificate** per project.
 - The **Admin** verifies each User's certificate against the embedded Cloud root, then enforces its own live role tables.
 - **Cloud sessions gate Cloud API calls only.** Project operation never checks a Cloud session.
-- **Revocation is local and immediate.** The Admin records it locally; it takes effect on the next operation.
+- **Revocation is local and immediate.** The Admin records it in `membership_certs`; it takes effect on the next operation. The Cloud's `revocation_epoch` bumps when the Admin next syncs.
+- **Validity maths.** Certificates are valid 90 days; a licence is valid 30 days with a 14-day offline grace (ADR-014). The grace is always shorter than certificate validity, so during a Cloud outage the licence state — not certificate expiry — is the binding constraint. Plan 1 holds a perpetual local licence and zero Users.
+
 
 ### 3. Grant → backfill & Revoke → purge
 
@@ -55,8 +66,7 @@ To prove v1 is a true subset of the final architecture (Acceptance Test #6: rebu
 1. **Projected business tables** — change *only* via `apply_event`, and **are** reproduced by replay:
 `mod_*`, `project_meta`, `profiles`, `tombstones`, `roles`, `role_permissions`, `member_roles`, `erasure_ledger`.
 2. **Log tables** — append-only: `events`, `audit_entries`, `command_log`, `outbox`.
-3. **Host-state tables** — not replayed from events:
-`module_registry`, `schema_version`, `resource_keys`, `blind_indexes`, `membership_certs`, `user_projections`, `mesh_peers`.
+3. **Host-state tables** (not replayed from events): `module_registry`, `schema_version`, `resource_keys`, `blind_indexes`, `membership_certs`, `user_projections`, `mesh_peers`.
 
 **Why roles and the erasure ledger are Projected.** Role changes are business events — ADR-004's own example log contains `1005: RoleGranted(U3, patient.read)`, which UserA applies. If `member_roles` were host-state, replay could not reproduce it and a User could never project a role change. Erasure likewise emits `resource.erased`; the ledger entry is a business fact and must replay.
 
@@ -65,6 +75,33 @@ To prove v1 is a true subset of the final architecture (Acceptance Test #6: rebu
 **Purge and eviction are events.** Quota-driven hard delete emits `tombstone.purged`; erasure emits `resource.erased`. Both go through `apply_event`. A silent `DELETE` would make `tombstones` diverge on replay and break test #6.
 
 **Outbox pruning is the one append-only exception.** `outbox` is delivery bookkeeping, not a record. Pruning `status='skipped'` rows older than 30 days is permitted and is excluded from the test #6 diff. `events`, `audit_entries` and `command_log` are never pruned.
+
+### 6. Delivery: range batches
+
+Every `EventBatch` declares `range_start` and `range_end` — "everything you may see in this range is here."
+
+- The cursor advances to `range_end` after the batch is applied.
+- Events inside the range that were not delivered are recorded as explicit skips with a reason: `denied` or `module_incompatible` (ADR-011).
+- A gap inside a delivered range means "not authorised" or "module update needed", never "lost".
+- The cursor never advances past a range it has not received.
+- `permission_version` accompanies every batch; a newer value tells the User a permission change occurred and to expect a backfill or purge.
+
+### 7. Writes: one round trip
+```text
+User → CommandRequest { command_id, idempotency_key, expected_version,
+module_id, api_version, command_type, payload }
+Admin : validate → authorise → check expected_version → apply in ONE transaction
+(event + apply_event + audit + outbox + command_log)
+Admin → CommandResponse { command_id, ok, applied_sequence, aggregate_version }
+or a typed error
+User : waits until its projection cursor reaches applied_sequence.
+It never applies the write locally.
+```
+- **Optimistic concurrency only.** A stale `expected_version` → `ConflictError` carrying the current version. No last-write-wins, no auto-merge.
+- **Idempotency.** `command_log` is keyed `(actor_id, idempotency_key)` and stores `request_hash`. Same key + same request → the stored result. Same key + different request → `IdempotencyConflict`.
+- Typed errors: `ValidationError`, `AuthorizationError`, `ConflictError`, `IdempotencyConflict`, `ModuleVersionMismatch`, `AdminOffline`.
+- "Saved on Admin — updating your view" is projection lag, not a pending write (ADR-009).
+
 ---
 
 ## Platform tables (final list: 18 Admin / 6 User)
@@ -89,7 +126,7 @@ These live **inside each `project.db`**. Device-level state (like the clock anch
 | 11 | `roles` | Projected | Role catalogue |
 | 12 | `role_permissions` | Projected | Role → permission strings |
 | 13 | `member_roles` | Projected | Member → roles (authoritative revocation record) |
-| 14 | `profiles` | Projected | Member directory (id, email, name). Replaces `license_state` in the 18-table count. |
+| 14 | `profiles` | Projected | Member directory (id, email, name). |
 | 15 | `membership_certs` | Host-state | Cloud certificates + local revocations |
 | 16 | `user_projections` | Host-state | Per member: cursor, permission_version, purge acks |
 | 17 | `mesh_peers` | Host-state | Device pubkeys, virtual IPs, endpoints |

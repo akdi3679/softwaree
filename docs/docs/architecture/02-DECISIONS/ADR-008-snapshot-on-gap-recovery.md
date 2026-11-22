@@ -43,7 +43,7 @@ When a threshold is crossed on reconnect, the Admin:
 
 **A snapshot is not an event.** It is per-User, it contains no new fact, and it must never enter the Admin's global `events` log. It is a transport frame tied to the sequence at which it was computed. There is no `ProjectionSnapshotSent` event type.
 
-The User applies it atomically in one transaction, sets its cursor to `S`, then resumes normal delta processing.
+The User applies it atomically in one transaction. For a fullsnapshot it sets its cursor toSand resumes delta processing fromS + 1. partialandmodule_refresh snapshots never move the cursor (see below).
 
 ### The three snapshot scopes
 
@@ -56,6 +56,8 @@ A `SnapshotPayload` carries a `scope` with exactly three values. They are differ
 | `"module_refresh"` | Replace exactly one module's rows | yes — that module only | **Module-update catch-up** (ADR-011) |
 
 `"partial"` is never used for replacement, and `"module_refresh"` is never used for a grant. Confusing them would either leak stale rows or delete data that should survive.
+
+The Admin sends `partial` and `module_refresh` only when the member's cursor already equals the snapshot's `sequence` S: it first delivers deltas up to S. If events arrive after S, normal delivery continues from the cursor. A `partial` or `module_refresh` snapshot never moves the cursor, so it can never skip an event.
 
 ### Chunking
 
@@ -132,13 +134,15 @@ For `scope: "module_refresh"`, `refresh_module` names the module, and `tables` c
 3. Verify permission_version >= the last one this User has seen
 4. BEGIN
 5.   scope = full           → wipe the projection tables
-     scope = partial        → delete only the listed granted_resources (idempotent re-apply)
+     scope = partial        → UPSERT the listed granted_resources by id (insert or replace); delete nothing
      scope = module_refresh → delete that module's rows only
 6.   Insert the snapshot rows
 7.   Unwrap the keys and store them in the projection key store
-8.   Set cursor = payload.sequence, permission_version = payload.permission_version
+8.   scope = full → set cursor = payload.sequence.
+     scope = partial or module_refresh → do NOT move the cursor.
+     Always set permission_version = payload.permission_version
 9. COMMIT
-10. Resume sync from sequence + 1
+10. Resume sync: from sequence + 1 after a full snapshot; from the unchanged cursor + 1 after partial or module_refresh
 ```
 
 Atomic. Any failure leaves the User at its old cursor; it asks again on reconnect. Re-applying the same `snapshot_id` is a no-op.
@@ -161,8 +165,8 @@ projects/{id}/snapshots/
         └── ...
 ```
 
-- `recovery/` is included in local backup routines. `projection-cache/` is **not** backed up — it is rebuildable.
-- Cache files are encrypted with the **Projection Cache Key** (a random per-project key held in the OS keychain, distinct from the database key — ADR-022). A cache file on a stolen disk is ciphertext.
+- Neither directory is part of a Cloud backup archive (ADR-005 allow-list). `recovery/` is local-only crash protection; `projection-cache/` is rebuildable.
+- Cache files are encrypted with the **Projection Cache Key** (a random per-project key held **inside the project keyring**, distinct from the database key — ADR-022). A cache file on a stolen disk is ciphertext.
 - `pv<N>` in the filename is the permission version. Cache entries for older permission versions are deleted immediately when the version bumps.
 
 ### Cache lookup on reconnect
@@ -172,6 +176,8 @@ projects/{id}/snapshots/
 2. Yes → send it; the User's cursor advances to the snapshot's sequence
 3. No  → compute a fresh snapshot, cache it under (user_id, permission_version), send it
 ```
+
+- **Erasure deletes cache files.** When a resource is erased (ADR-016) every cached snapshot containing it is deleted after the erasure transaction commits; a failed deletion poisons the cache directory (ADR-016 §3).
 
 **Any permission change for a member bumps their `permission_version` and deletes every cached snapshot for them.** A cached snapshot must never be served to a just-revoked user. This is the difference between a cache and a data leak.
 
@@ -224,6 +230,7 @@ This is a **v2 optimisation**. In v1 the first reconnecting User waits a few ext
 - [ ] Permission granted → partial backfill delivers previously unseen rows and keys
 - [ ] Module update → module_refresh replaces only that module's rows
 - [ ] partial never deletes; module_refresh never touches other modules
+- [ ] partial or module_refresh requested while the member's cursor < S → Admin delivers deltas to S first; the cursor never skips an event
 - [ ] Re-applying the same `snapshot_id` → no-op
 - [ ] Cache file on disk is ciphertext without the keychain key
 - [ ] Tampered snapshot → signature check fails, cursor unchanged

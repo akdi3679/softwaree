@@ -31,6 +31,7 @@ Legend: ✅ works · ❌ refused · ⚠️ degraded / bounded · — not applica
 | Discovery disabled / opted out | LAN, cached endpoint, QR/manual, relay still work | 020 |
 | Discovery down | Cached endpoint + LAN work; new cross-network pairs need manual endpoints | 020 |
 | No connectivity at all | Sneakernet: **read-only** snapshot export/import | 008, 024 |
+| Probe receives no echo | No endpoint stored; peers must use LAN, manual pairing or a relay | 020 |
 | Relay tampered with a packet | Peer rejects it; relay can only drop, never read or forge | 024 |
 ---
 ## 3. Data-loss and recovery scenarios
@@ -46,6 +47,7 @@ Legend: ✅ works · ❌ refused · ⚠️ degraded / bounded · — not applica
 | Patch fails before commit | Transaction rollback; no partial state | 015 |
 | Patch fails after commit | Restore from pre-update snapshot; **never a downgrade** | 015 |
 | Snapshot transfer interrupted | User keeps its old cursor, re-requests missing chunks | 008 |
+| Cache file deletion fails after an erasure | Cache directory poisoned; no cached snapshot served until rebuilt; security event logged | 016 |
 ---
 ## 4. Licence, permission and version scenarios
 | Scenario | Behaviour | Governing ADR |
@@ -57,7 +59,9 @@ Legend: ✅ works · ❌ refused · ⚠️ degraded / bounded · — not applica
 | Custom module no longer entitled | Module disabled; its tables retained and exportable | 011, 014 |
 | Bootstrap window (30 d) lapses, never activated | Read-only; export always available | 023 |
 | Clock rolled backwards | Ignored for expiry; monotonic anchor governs | 014 |
-| Anchor file deleted | Treated as expiry-unknown → grace → read-only | 014 |
+| `admin_state.db` deleted, or older than its keychain revision mirror | Expiry-unknown → **read-only immediately** until Cloud contact (fail-closed) | 014 |
+| New or replacement device, no anchor history | Read-only until first Cloud contact; anchor seeded from the signed Cloud time | 014 |
+| Offline activation file older than 7 days | Refused as an anchor source | 014, 023 |
 | Critical patch deadline passed | **Restricted mode:** writes refused; read, export, print, local backup available | 015 |
 | Permission granted while member offline | On reconnect: partial backfill snapshot delivers the history | 012, 008 |
 | Permission revoked while member offline | On reconnect: `Purge` deletes the rows; best-effort, honestly described | 012 |
@@ -65,6 +69,7 @@ Legend: ✅ works · ❌ refused · ⚠️ degraded / bounded · — not applica
 | Admin newer module, User older | Explicit `module_incompatible` skips; cursor advances; update prompt; partial backfill after update | 011, 012 |
 | User newer module, Admin older | Commands rejected with `ModuleVersionMismatch`; "waiting for Admin to update" | 011 |
 | Two devices both claim Admin | Only the Cloud-issued authority certificate is accepted; the other is refused by Users | 002, 010 |
+
 ---
 ## 5. Invariants that hold in every cell above
 1. A User never reports success for a write the Admin has not committed.

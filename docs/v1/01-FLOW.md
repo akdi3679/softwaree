@@ -40,18 +40,14 @@ allow-list expanded, recovery ceremony aligned with ADR-022
      at registration). The Cloud cannot unwrap without the HSM and the
      recovery ceremony.
 
-   > **D-2 RESOLVED by ADR-022.** The password is required to open the app;
-   > the OS keychain supplies the device keys. Two independent gates.
-   > Auth and encryption stay separate. The unwrapped database key is held
-   > for the running session only and never written to disk.
+   > **D-2 RESOLVED by ADR-022.** The password gates the **app UI**; the OS keychain holds the **keys**. They are independent: guessing the password never yields a key, and no key is derived from it. **Honest limit:** a process running as the same OS user can read the keychain entries, so the password is **not** protection against local malware (THREAT-MODEL A16). The unwrapped database key is held for the running session only and never written to disk.
 
-5. **Project creation:**
-   - Project name (e.g. "Lab 2026")
-   - Creates `projects/{project_id}/project.db` (SQLCipher-encrypted)
-   - Runs migration 001 (10 platform tables + 9 module tables = 19 total)
-   - Writes `project_meta` with the four creation fields
-   - Writes `mod_food_lab_settings` (lab defaults) + `profiles` (one admin row)
-   - Writes the genesis audit entry (`project.created`, prev_hash = 64 zeros)
+5. **Project creation** — one platform command, `create_project`, in ONE transaction:
+    - creates `projects/{project_id}/project.db` (SQLCipher) and runs the **`platform` migration scope (10 empty tables)**; the 9 module tables are created when the module is installed (step 8);
+   - emits platform events through `apply_event`: `project.created` (→ `project_meta`, the four creation fields) and `profile.created` (→ `profiles`, one admin row), actor `system:setup`;
+   - appends the genesis audit entry (`project.created`, prev_hash = 64 zeros);
+   - registers the project in `admin_state.db` → `project_registry`.
+   Nothing is inserted directly: locks 1 and 10 apply to project creation too. Settings defaults and reference data are **not** created here (step 8).
 
 6. **Cloud registration — async, retryable, never blocking:**
    - `POST /v1/accounts` (email + password)
@@ -71,6 +67,7 @@ allow-list expanded, recovery ceremony aligned with ADR-022
 7. **Plan screen:**
    - One plan: **Plan 1+ (Solo Cloud) — 149 TND / month**, 14-day free trial
    - "Start trial" or "Subscribe now"
+   - Starting the trial or subscribing calls `POST /v1/projects/{id}/activate`, which returns the signed licence, the licence certificate and the Admin authority certificate (the Escrow public key was returned at registration in step 6).
 
    > **OPEN DECISION D-3 — payment provider.**
    > Stripe does not settle TND. Options: (a) bill EUR/USD via Stripe,
@@ -90,13 +87,15 @@ allow-list expanded, recovery ceremony aligned with ADR-022
      - `device_bind` — bound to this specific device's public key (per device)
    - App verifies all three + binary SHA-256 + ciphertext SHA-256, then
      stores it in `projects/{project_id}/modules/`.
+   - Install then runs the module's **migration scope `food-lab`** (9 empty `mod_food_lab_*` tables) inside the install transaction, after a pre-migration snapshot (ADR-006).
+   - The module's `initialise` command then emits events that create the `mod_food_lab_settings` defaults and the **reference data** (parameters, categories, standards). Migrations never insert rows. In Phases 3–5, while the module is embedded, it runs at first launch.
    - Any failure → refuse to load, log a security event, notify Cloud.
    - **Re-verified at every load**, not just at install.
 
 9. **Land in the main app:**
    - Dashboard loads.
    - Food-lab module loads (in-process behind the `LabModule` trait during
-     Phases 3–5; Wasmtime from Phase 6).
+     Phases 3–5; Wasmtime from Phase 6a).
    - UI talks to the module through the **HostClient interface**. The Tauri
      adapter is used in Phases 3–6a; the **Bridge adapter lands in Phase 6b**,
      inside v1, when the UI moves into the sandboxed iframe. Same pages,
@@ -183,7 +182,7 @@ This flow must work before v1 ships. It is acceptance test #8.
 
 **Planned device move (old device still available):**
   Skips the escrow release and the 48-hour wait. The old device creates a **transfer bundle** (Project Master Key + keyring contents wrapped to the new device's X25519 pubkey), moved via LAN or USB; the new device unwraps it with its X25519 private key. **The Cloud is still contacted** to register the replacement (`POST /v1/devices/{id}/replace`), issue the new Admin authority certificate and re-issue module bundles; until that first contact the new device is read-only (ADR-014 §3). No password-derived key is involved.
-  
+
 ## Update
 
 - App checks on launch for a new signed binary.

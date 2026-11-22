@@ -4,7 +4,7 @@ SESSION-PLAN.md
 # Product v1.0 — AI Session Plan (SUPERSEDED)
 
 > **Status: SUPERSEDED — 2026-11-22**
-> **Superseded by:** `v1/04-PHASES.md` (honest estimate: **10–12 weeks**)
+> **Superseded by:** `v1/04-PHASES.md` (honest estimate: **13–17 weeks**, one engineer)
 > **Kept for historical context only. Do not execute from this file.**
 
 ---
@@ -139,8 +139,15 @@ activation; ADR-024 userspace tunnel, hole-punch, blind relay, probe.
 
 ## Estimate
 
-**Superseded.** See `v1/04-PHASES.md`: **10–12 weeks** of engineering,
+**Superseded.** See `v1/04-PHASES.md`: **13–17 weeks (one engineer) / 9–11 weeks (two engineers)** of engineering,
 plus external security audit (4–6 weeks) and beta (4 weeks). Total to
 public launch: **~4–5 months**.
-
+The earlier "10–12 weeks" figure was the sum of phases with no buffer; it omitted the Cloud/Owner Console/recovery work and integration time.
 The "~11 hours" figure is retained above only as a record of what was wrong.
+
+
+
+
+
+
+

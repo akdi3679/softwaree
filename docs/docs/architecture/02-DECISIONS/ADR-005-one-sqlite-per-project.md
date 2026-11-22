@@ -70,7 +70,7 @@ plus module tables.
 - **Licence state and the monotonic clock anchor live in `admin_state.db`**
   (device-level), NOT in `project.db`. This prevents a backup restore from
   rolling the clock anchor back and extending the grace period. See
-  ADR-014 §7 and the Device-level state section below.
+  ADR-014 §3 and the Device-level state section below.
 - Two deletion concepts, never conflated:
   - Record-level corbeille — rows in `tombstones`, quota-bound (ADR-016).
   - Project-level deletion — whole file, Cloud registry soft-delete.
@@ -97,8 +97,7 @@ or 10 platform tables in v1 do not include it.
 
 `admin_state.db` is itself SQLCipher-encrypted with its own random key
 in the OS keychain. It is **excluded from project backups by an explicit
-allow-list**. It carries a monotonic `state_revision` counter so a rolled-back
-or deleted file is detected and treated as expiry-unknown.
+allow-list**. A counter *inside* the file cannot detect that the file itself was rolled back, so the current `state_revision` is **mirrored in the OS keychain**. On open: keychain key present but file missing, or file revision lower than the mirror ⇒ **tamper** ⇒ expiry-unknown ⇒ read-only until the next Cloud contact. Neither file nor keychain key present ⇒ **new device** ⇒ the new-device rule in ADR-014 §3.
 
 ---
 
@@ -148,7 +147,7 @@ Full hierarchy in ADR-022.
 ### Unlock flow
 
 ~~~
-1. User authenticates to the OS (biometric / OS account / password)
+1. User unlocks the app (app-unlock password, ADR-022 §3); the OS session is already unlocked for the OS user
 2. OS keychain releases the Project Master Key
 3. Master Key decrypts keys/keyring.enc → DB Key, Keyring Key, etc.
 4. project.db opened with DB Key (SQLCipher PRAGMA key)
@@ -227,6 +226,7 @@ A backup is one encrypted archive per project.
 3. Open the restored project.db
 4. RE-APPLY the erasure_ledger (ADR-016) before writable
 5. Register the new device as Admin (ADR-010); re-issue bundles (ADR-007)
+5b. On a new device: create `admin_state.db` (with its own keychain key), store the new device keys, fetch the licence from the Cloud, and seed the clock anchor from the **signed Cloud timestamp** (ADR-014 §3). Until that first Cloud contact the project is read-only.
 6. Users verify new authority certificate and resync (ADR-012)
 ~~~
 

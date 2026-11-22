@@ -12,7 +12,8 @@
 
 ADR-006 gave modules a sandboxed place to run **logic**. Nothing defined where a module's **screens** come from. If module pages are compiled into the app binary, then adding a module or a page forces a full app release. That defeats the owner's stated goal of creating and shipping modules from the private channel.
 
-Furthermore, the UI port in Phase 5 would call `invoke()` directly, but from Phase 6 the UI runs in a sandboxed iframe with no Tauri access and `connect-src 'none'`, so only `postMessage` works. Without an abstraction layer, the entire UI would need to be rewritten in Phase 6.
+Furthermore, the UI port in Phase 5 would call `invoke()` directly, but from Phase 6b the UI runs in a sandboxed iframe with no Tauri access and
+`connect-src 'none'`, so only `postMessage` works. Without an abstraction layer, the entire UI would need to be rewritten in Phase 6b.
 
 ## Decision
 
@@ -21,15 +22,24 @@ Furthermore, the UI port in Phase 5 would call `invoke()` directly, but from Pha
 All module UI pages are written against a **HostClient** interface, not directly against Tauri's `invoke()`:
 
 ```typescript
+
 interface CommandOpts {
-idempotencyKey: string; // UUIDv7, required — Principle 6
-expectedVersion?: number; // optimistic concurrency — ADR-004
+  idempotencyKey: string;      // UUIDv7, required — Principle 6
+  expectedVersion?: number;    // optimistic concurrency — ADR-004
 }
+interface BlobHandle { id: string; sha256: string; bytes: number; mime: string }
 interface HostClient {
-query<T>(name: string, payload: unknown): Promise<T>;
-command<T>(name: string, payload: unknown, opts: CommandOpts): Promise<T>;
-ui: { toast; navigate; print; close };
-log(entry: unknown): void;
+  query<T>(name: string, payload: unknown): Promise<T>;
+  command<T>(name: string, payload: unknown, opts: CommandOpts): Promise<T>;
+  openBlob(handle: BlobHandle): Promise<void>;     // host viewer, outside the iframe
+  uploadBlob(file: File): Promise<BlobHandle>;     // chunked ≤256 KB inside the adapter
+  ui: {
+    toast(message: string): void;
+    navigate(route: string): void;
+    print(handle?: BlobHandle): Promise<void>;
+    close(): void;
+  };
+  log(entry: unknown): void;
 }
 ```
 
@@ -40,7 +50,7 @@ Two adapters implement this interface:
 - **Tauri adapter (Phases 3–6a, development):** calls `invoke()` directly. Used during development and before Wasmtime extraction.
 - **Bridge adapter (Phase 6b, production):** uses `postMessage` over the typed bridge to the host. Used when the module UI runs in a sandboxed iframe.
 
-This means the same React pages work in both contexts. No rewrite in Phase 6.
+This means the same React pages work in both contexts. No rewrite in Phase 6b.
 
 ### 2. Module UI is data, not app code
 
@@ -106,6 +116,10 @@ If the spike forces the custom-protocol fallback, the frame is still `sandbox="a
 
 **Decision point:** After the spike, choose `srcdoc` (simpler) or custom-protocol (more isolated). Document the choice in this ADR.
 
+
+The spike must also render the real **Samples page** (Radix + shadcn + Tailwind) under the exact production CSP, in both variants.
+
+
 ### 5. The bridge
 
 The only channel between UI and host is `postMessage`, with a typed envelope:
@@ -139,6 +153,18 @@ Allow-listed method families:
 Never exposed: `db.*`, `fs.*`, `net.*`, `key.*`, `audit.*`, `module.*`.
 
 Limits: 1 MB per message, 100 messages/second, 20 in-flight requests, 10 s request timeout. Exceeding any limit closes the frame and logs a security event.
+
+
+### 5.1 Large binaries (PDFs, logos)
+
+The bridge limit is 1 MB per message and the sandbox has `frame-src 'none'`, so module UI **never holds PDF or logo bytes**.
+
+- Queries return an opaque **blob handle** `{ id, sha256, bytes, mime }`.
+- `openBlob(handle)` asks the **host** to open its own viewer window (outside the iframe). Preview and print happen there.
+- `uploadBlob(file)` streams the file to the host in ≤256 KB chunks over the bridge; the host assembles it, verifies size and hash, stores it as a BLOB (ADR-005, ADR-016) and returns the handle.
+- Allow-listed method families gain `host.blob.open` and `host.blob.upload`.
+- Both adapters (Tauri and Bridge) implement both methods from the first UI phase, so no page is rewritten when the sandbox arrives.
+
 
 ### 6. Bundle format (aligned with ADR-007)
 
@@ -195,11 +221,11 @@ Encrypted content, three signatures, an opaque-origin frame and a validated brid
 - New modules and new pages ship without an app release.
 - One bundle format covers logic, UI, encryption and licensing.
 - The UI cannot reach the network, storage, keys, or the host DOM.
-- **No UI rewrite in Phase 6** — the HostClient abstraction handles both Tauri and bridge adapters.
+- **No UI rewrite in Phase 6b** — the HostClient abstraction handles both Tauri and bridge adapters.
 
 ### Negative
 - The bridge is a real API surface and must be versioned, fuzzed and reviewed.
-- Inlining assets at load time costs a few milliseconds and forbids inline style attributes.
+- Inlining assets at load time costs a few milliseconds.
 - Two runtimes per module (Wasmtime + iframe) means two sets of limits to enforce.
 - Phase 0 CSP spike adds a small upfront cost.
 
@@ -221,8 +247,7 @@ Encrypted content, three signatures, an opaque-origin frame and a validated brid
 
 **Skip UI sandboxing because the UI is signed.** Rejected: signing proves who published it, not that it is bug-free.
 
-**Write UI directly against `invoke()`.** Rejected: entire UI would need rewrite in Phase 6 when iframe bridge is required.
-
+**Write UI directly against `invoke()`.** Rejected: entire UI would need rewrite in Phase 6b when iframe bridge is required.
 ---
 
 ## Enforcement
@@ -256,3 +281,5 @@ Encrypted content, three signatures, an opaque-origin frame and a validated brid
 - [ ] `module_refresh` never touches another module's rows
 - [ ] Unsupported `api_version` → clean "needs a newer app" message, never a crash
 - [ ] Uninstalled module → bundle and Content Key gone, data still exportable
+- [ ] Opening a 5 MB signed PDF from module UI works through openBlob, no PDF bytes cross the bridge
+- [ ] Logo upload larger than 1 MB succeeds in chunks

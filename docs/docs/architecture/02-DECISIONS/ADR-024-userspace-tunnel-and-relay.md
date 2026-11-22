@@ -43,7 +43,8 @@ Consequences: identical behaviour on Windows, macOS and Linux; a standard-user i
 ```
 1. Both devices publish their observed endpoint to discovery
 2. Requester calls POST /v1/discovery/punch (signed, same-project)
-3. Discovery returns a rendezvous_id
+3. Discovery returns a rendezvous_id to the requester. The target learns of it from the long-poll
+   GET /v1/discovery/inbox (or from pending_punches in its heartbeat response), ADR-020
 4. Both devices short-poll GET /v1/discovery/punch/{rendezvous_id}
    until both are registered and discovery answers with the same
    {peer_public_ip, peer_udp_port, punch_at}
@@ -54,8 +55,9 @@ Consequences: identical behaviour on Windows, macOS and Linux; a standard-user i
 - Works with **endpoint-independent (cone)** mapping on at least one side.
 - Usually fails with **symmetric NAT / filtering CGNAT** on both sides. We detect this in the self-test (ADR-019) and fall through without retrying forever.
 - The WireGuard keep-alive (25 s) holds the mappings open.
+- Discovery returns 409 when both sides are `symmetric`; the client goes straight to a relay.
 
-**Coordination mechanism (how both sides learn the same `punch_at`).** The rendezvous record plus short polling is sufficient and keeps discovery stateless between heartbeats. The rendezvous record is deleted on success or after the window expires. There is no requirement for server push.
+**Coordination mechanism (how both sides learn the same `punch_at`).** The rendezvous record plus short polling is sufficient and keeps discovery stateless between heartbeats. The rendezvous record is deleted on success or after the window expires. The only held server request is the target's inbox long-poll (ADR-020); there is no other server push.
 
 ### 4. The blind relay (opt-in)
 

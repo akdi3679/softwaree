@@ -35,6 +35,18 @@ References into the big doc (authoritative):
 - 9 phases (0–7, with 6a/6b)
 - 28 acceptance tests
 
+## Open decisions (the only two)
+
+| ID | Question | Must be closed before |
+|---|---|---|
+| D-1 | Per-result or per-lot ICMSF verdict (check the existing `calculate_compliance` trigger; record the answer in `02-DATA-MODEL.md`) | Phase 3 starts |
+| D-3 | Payment provider (Stripe does not settle TND; verify recurring support of Konnect / Paymee / Flouci; else prepaid periods + manual renewal) | Phase 6b starts |
+
+D-2 (password boundary) is resolved by ADR-022.
+
+---
+
+
 ## Precedence
 
 If code disagrees with these docs, **the docs win** until an ADR supersedes.

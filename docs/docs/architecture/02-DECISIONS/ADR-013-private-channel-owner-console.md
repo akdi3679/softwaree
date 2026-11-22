@@ -78,11 +78,13 @@ Many ADRs (007, 015, 022) require quorum approval for high-risk actions (publish
 We introduce an `approvals_required` setting in the Owner Console (default: 2).
 
 **Solo-Owner Mode (`approvals_required = 1`):**
+
 When set to 1, the system enforces reduced assurance to compensate for the lack of a second human:
+
 1. The single approver must use a hardware security key (WebAuthn/FIDO2).
-2. A **mandatory 24-hour delay** between request and execution. This value is fixed, not configurable per action.
+2. A **mandatory 24-hour delay** between request and execution. This value is fixed, not configurable per action. For an escrow release the 24-hour delay runs **concurrently** with the 48-hour recovery wait; the case becomes executable at the later of (48 h after it opened) and (24 h after the single approval).
 3. An **out-of-band alert** to a designated emergency contact (owner's personal email or legal representative) with a working cancel link.
-4. The action is logged in the platform audit chain with a `solo_approval` flag.
+4. The action is permanently logged in the platform audit chain with a `solo_approval` flag.
 5. **`approver_id != requester_id` is explicitly relaxed in solo mode.** With one staff member it is unsatisfiable. The relaxation is a deployment-level fact recorded in the owner chain, not a silent bypass; at quorum ≥ 2 the check is enforced in code.
 6. **Every customer-facing assurance string is generated from the deployment's quorum.** The ADR-022 §6 enrolment text and the recovery-case emails must say "one of our staff, a 24-hour internal delay and a 48-hour wait" in solo mode — never "two of our staff". These are tested strings; a solo deployment rendering the two-person text fails CI.
 7. THREAT-MODEL A10's residual is stated for the actual quorum: at 1, a **single** compromised insider can approve an escrow release after the waits. This is disclosed, not hidden.

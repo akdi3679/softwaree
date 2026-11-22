@@ -47,29 +47,76 @@ Renewal does NOT re-sign it.
     "ui/module.js": "<SHA-256>",
     "ui/module.css": "<SHA-256>"
   },
-"migrations_sha256": { "migrations/001.sql": "<SHA-256>" },
-  "tables": ["mod_food_lab_settings", "..."],
+  "migrations_sha256": {
+    "migrations/001.sql": "<SHA-256>"
+  },
+  "tables": [
+    "mod_food_lab_settings",
+    "..."
+  ],
   "commands": [
-    { "name": "create_sample",
+    {
+      "name": "create_sample",
       "permission": "food-lab.sample.create",
-      "writes": ["mod_food_lab_samples"],
-      "events": ["sample.created"],
-      "offline_policy": "ADMIN_REQUIRED" }
+      "writes": [
+        "mod_food_lab_samples"
+      ],
+      "events": [
+        "sample.created"
+      ],
+      "offline_policy": "ADMIN_REQUIRED"
+    }
   ],
   "queries": [
-    { "name": "list_samples", "reads": ["mod_food_lab_samples"] }
+    {
+      "name": "list_samples",
+      "reads": [
+        "mod_food_lab_samples"
+      ]
+    }
   ],
-  "pages": ["Samples", "SampleForm", "SampleDetail", "Standards",
-            "Categories", "Companies", "Reports"],
+  "pages": [
+    "Samples",
+    "SampleForm",
+    "SampleDetail",
+    "Standards",
+    "Categories",
+    "Companies",
+    "Reports"
+  ],
   "capabilities": {
-    "filesystem": "none", "network": "none", "clock": true,
-    "cpu_ms": 5000, "memory_mb": 64,
-    "max_instances": 4, "max_payload_bytes": 1048576
+    "filesystem": "none",
+    "network": "none",
+    "clock": true,
+    "cpu_ms": 5000,
+    "memory_mb": 64,
+    "max_instances": 4,
+    "max_payload_bytes": 1048576
   },
-  "sensitive_resources": ["sample", "result", "report"],
+  "sensitive_resources": [
+    "sample",
+    "result",
+    "report"
+  ],
+  "derived": [
+    {
+      "function": "compute_verdict",
+      "table": "mod_food_lab_results",
+      "frozen_when": {
+        "column": "is_in_signed_report",
+        "equals": 1
+      }
+    }
+  ],
+  "replay": {
+    "events_unaffected": true,
+    "upcasters": []
+  },
   "rule_version": 1
 }
+
 ```
+derived declares which module functions recompute_derived (ADR-015) may call and which rows are frozen; the compiler reads it from the verified manifest and never hard-codes a table. replay declares, per version, either events_unaffected: true or a list of upcasters; CI rejects a publish that changes apply_event semantics and declares neither (ADR-006).
 
 ### The binding section (signed per device, per licence renewal)
 
@@ -106,41 +153,27 @@ bundle/
     ├── module.js
     └── module.css
 ```
+manifest.json is one JSON object with exactly two keys: { "module": <module section>, "binding": <binding section> }, canonicalised with JCS. module_hash covers JCS(manifest.module); bundle_hash covers JCS(manifest.binding). Any other top-level key is rejected. The v1 example in v1/02-DATA-MODEL.md must use this shape. 
 
 ### The three hashes and three signatures
 
-```
-All hashes are SHA-256. In every concatenation and every JSON tuple a hash is
-**lowercase 64-character hex** — fixed length, so concatenation is unambiguous
-(same rule as the audit chain, Principle 11). Variable-length concatenation
-without a fixed-length or length-prefixed encoding is forbidden.
+All hashes are SHA-256. In every concatenation and JSON tuple a hash is **lowercase 64-character hex** (fixed length, so concatenation is unambiguous — the same rule as the audit chain, Principle 11).
 
-module_hash = SHA-256( "platform.module.v1" || JCS(module_section) )
-bundle_hash = SHA-256( "platform.bundle.v1" || hex(module_hash) || JCS(binding_section) )
+```text
+module_hash = SHA-256( "platform.module.v1" || JCS(manifest.module) )
+bundle_hash = SHA-256( "platform.bundle.v1" || module_hash_hex || JCS(manifest.binding) )
 
-cloud_root      = Ed25519_Sign( CloudRootKey,      module_hash )   // 32 raw bytes
-project_license = Ed25519_Sign( ProjectLicenceKey, bundle_hash )   // 32 raw bytes
+cloud_root      = Ed25519_Sign( CloudRootKey,      module_hash_bytes )   // ONCE at publish (quorum ceremony, ADR-013)
+project_license = Ed25519_Sign( ProjectLicenceKey, bundle_hash_bytes )   // per device, per renewal
 device_bind     = Ed25519_Sign( CloudSigningKey,
-                    "platform.bind.v1" || JCS({
-                      bundle_hash,          // lowercase hex
-                      device_pubkey, project_id, license_expiry
-                    }))
-
-Ed25519 hashes its input internally, so signing the 32-byte digest is standard;
-the domain tag lives inside the digest pre-image.
-cloud_root is produced ONCE at publish (quorum ceremony, ADR-013).
-project_license and device_bind are produced per device, per renewal.
-
-device_bind = Sign(CloudSigningKey,
-    "platform.bind.v1" || JCS({
-      bundle_hash, device_pubkey, project_id, license_expiry
-    }))
-  → Cloud signing service signs this per device, per renewal
+                    "platform.bind.v1" || JCS({ bundle_hash, device_pubkey,
+                                                project_id, license_expiry }) )   // per device, per renewal
 ```
 
-**Only the manifest is signed.** The manifest contains the binary hash
-(plaintext), the ciphertext hash, the UI hashes, and the migration
-hashes. Signing the binary separately would be redundant.
+`*_bytes` are the 32 raw digest bytes. Ed25519 hashes its input internally, so signing the digest is standard; the domain tag lives inside the digest pre-image.
+
+- `cloud_root` is produced ONCE at publish (quorum ceremony, ADR-013).
+- `project_license` and `device_bind` are produced per device, per renewal.
 
 ### What each signature proves
 
@@ -150,25 +183,15 @@ hashes. Signing the binary separately would be redundant.
 | `project_license` | `bundle_hash` | Per device, per renewal | "This project, on this plan, may run it" |
 | `device_bind` | bind tuple | Per device, per renewal | "Bound to this specific device's key" |
 
-### device_bind definition (one place, used everywhere)
+### device_bind verification
 
-```
-device_bind = Ed25519_Sign(
-  CloudSigningKey,
-  "platform.bind.v1" || JCS({
-    bundle_hash,
-    device_pubkey,
-    project_id,
-    license_expiry
-  })
-)
-```
+
 
 At verification the device:
 1. Verifies the signature with the Cloud public key (embedded root or delegated cert).
 2. Checks `device_pubkey` in the signed tuple equals its own Ed25519 public key.
 3. Checks `license_expiry` is in the future (monotonic clock anchor, ADR-014).
-
+For a `perpetual` bundle `license_expiry` is the JSON value `null` in both the binding section and the `device_bind` tuple; step 3 is skipped.
 It is a **signature, never a MAC**. No shared secret exists.
 
 ### Why the split matters
@@ -181,8 +204,10 @@ With the split:
 - **Publish** = quorum ceremony, signs module_hash once.
 - **Issue/renew** = automated Cloud process, signs binding per device.
 - Renewal re-signs only the binding section. No re-encryption needed
-  (the Content Key and ciphertext are unchanged; only `license_expiry`
-  and `issued_at` change in the binding).
+(the Content Key and ciphertext are unchanged; only `license_expiry`
+and `issued_at` change in the binding).
+
+**Issuance.** The Cloud registry stores the published **plaintext** module binary and UI (module code is not customer data). For each device the signing service generates a Content Key, encrypts the binary, wraps the key to the device's X25519 key, builds the binding section, and produces `project_license` and `device_bind`.
 
 ---
 
@@ -202,9 +227,8 @@ This is how a new module creates its tables — the answer to "owner
 creates new modules" (ADR-006).
 
 For v1, the food-lab migrations are embedded in the app binary and split
-into `platform/` and `food_lab/` directories. In Phase 6 they move into
+into `platform/` and `food_lab/` directories. In Phase 6b they move into
 the bundle.
-
 ---
 
 ## Verification flow
@@ -296,12 +320,6 @@ cheap and keeps `ciphertext_sha256` stable.
 **v1-foodlab note:** bootstrap is **deferred** in this milestone (see
 `v1/DEVIATIONS.md`). The format is defined now so it never changes later.
 
-
-After the grace period, if the project has never been activated, the
-app becomes **read-only**. Reading and exporting always remain available
-(Principle 14). One free online activation converts the project to a
-normal licence and issues fully bound bundles (ADR-023).
-
 ---
 
 ## Consequences
@@ -340,16 +358,14 @@ not unbreakable DRM.** We state this plainly.
 
 | Key | Rotation | Notes |
 |---|---|---|
-| Cloud root | Annually | Old root stays embedded for one app-release overlap |
+| Cloud root | Annually | Re-sign ceremony for all ACTIVE module versions; old root kept until the ceremony completes (see below) |
 | Cloud signing service | 90 days | Delegated cert chaining to root |
 | Per-project licence key | 90 days or on plan change | Certificate validity matches |
 | Device binding | Not a key — an expiring signature | Re-issued on licence refresh |
 | Content Key | Per bundle | Never reused across devices or versions |
 | Module version | New version = new module section = new cloud_root signature | Old versions valid until revoked or expired |
 
-Root rotation never requires re-signing every historical bundle: the
-overlap window plus load-time expiry checks bound the exposure.
-
+**Root rotation is a re-sign ceremony, not just an overlap.** `cloud_root` signs `module_hash` once per module version, so retiring a root would orphan every version it signed. Procedure: (1) ship the new root public key in an app update, so the embedded trust set holds old + new; (2) in one **quorum** ceremony re-sign `module_hash` of every ACTIVE module version with the new root (binding sections are untouched); (3) clients accept a `cloud_root` signature from **any** root in the embedded set; (4) remove the old root from the embedded set only after every ACTIVE version is re-signed **and** the minimum supported app version contains the new root.
 ---
 
 ## Alternatives Considered
@@ -377,7 +393,7 @@ bundle, making a quorum publish ceremony impossible for renewals.
   can call it. Signing keys never loaded into the main API process.
 - Lint: no module version can be ACTIVE without the signatures its `bundle_kind`
 requires — three for `licensed` and `perpetual`, `cloud_root` only for `bootstrap`.
-- Lint: `cloud_root` is never invoked outside the publish ceremony. A code path
+- Lint: `cloud_root` is never invoked outside the publish ceremony and the root-rotation ceremony. A code path
 that signs a binding with the root key fails the build.
 - Lint: no code path reaches `wasmtime::Module::new` without verification.
 - Lint: no code treats a runtime-fetched public key as a trust anchor.

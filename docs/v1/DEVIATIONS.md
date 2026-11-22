@@ -1,5 +1,3 @@
-
-DEVIATIONS.md
 # v1 Deviations from Final Architecture
 
 **Status:** Locked
@@ -20,7 +18,7 @@ project is readable, but module pages show "Activate to begin".
 **Why:** Simplifies the v1 release and installer. The bundle format and
 bootstrap rules are fully defined in ADR-007/023 so enabling it later is a
 packaging change, not a format change.
-**Closure:** v1.1 or v1-foodlab Phase 7 (offline activation file support).
+**Closure:** v1.1 (ships bootstrap bundles and the offline activation file).
 
 ## 2. Zero-Knowledge Custody Mode (ADR-022)
 **Big doc rule:** Customers can choose zero-knowledge mode, where the Backup
@@ -64,6 +62,23 @@ data-loss risk for food labs. Plan 1 may be introduced in later milestones
 as a one-time paid tier with explicit "no backup" warnings.
 **Closure:** v1.1 or later (requires explicit UI warnings and adjusted
 acceptance tests).
+
+## 6. Offline Activation File (ADR-023 §5)
+**Big doc rule:** air-gapped sites activate with a signed offline activation file.
+**v1 deviation:** not built. Activation is online only.
+**Why:** it depends on bootstrap/activation packaging that is deferred (§1).
+**Closure:** v1.1.
+
+## 7. Per-resource encryption, blind indexes, read-audit, crypto-shredding (ADR-016, ADR-012)
+**Big doc rule:** sensitive data is encrypted per resource, searchable through blind indexes, erasable by destroying the resource key; reads of sensitive records are audited.
+**v1 deviation:** data is encrypted **at rest by SQLCipher only**. `events.payload_format` is `jcs-plain`. There are no `resource_keys` or `blind_indexes` tables and no read-audit. No command emits `resource.erased`, so `erasure_ledger` stays empty. Hard delete removes the tombstone copy only; **the plaintext also remains in the `events` log**, so v1-foodlab **cannot honour a legal erasure request**. Lab records are retained anyway for ISO 17025; any erasure request in this milestone is handled manually and declined or escalated.
+**Test coverage:** `restore_from_backup` still calls `reapply_erasure_ledger()`; it is covered by a fixture ledger row and does nothing destructive until v1.1.
+`apply_event` for `resource.erased` exists but no v1 command emits it; test 23 covers `tombstone.purged` only.
+**Closure:** v1.1 adds resource keys, blind indexes, read-audit and a snapshot-protected re-encryption of existing rows/events.
+
+## 8. Users, sync, mesh, discovery, relay (ADR-004, 008, 012, 017–020, 024)
+**v1 deviation:** none of it is built. The event log and command layer are shaped so adding it is additive (acceptance test 6).
+**Closure:** v1.1.
 
 ---
 

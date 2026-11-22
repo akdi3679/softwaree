@@ -41,7 +41,7 @@ documented manual run, not a claim.
    `apply_event` into a scratch database. Every **projected business
    table** (table classes defined in `02-DATA-MODEL.md`) matches the
    live database exactly. This proves v1 is a true subset of the final
-   architecture and that v1.1 needs no data migration.
+   architecture and that v1.1 needs no data migration. The scratch database is created by running the same migration scopes, then replaying events. Reference data created by initialise must be present after replay.
 
 ## Custody and recovery
 
@@ -55,8 +55,8 @@ documented manual run, not a claim.
    erasure ledger is re-applied before the project becomes writable.**
    Then run the full "laptop dies" flow: new device, 2FA, 48-hour wait,
    alerts, quorum approval, HSM re-wraps Backup Key to new device's
-   X25519 key, download, restore, re-issued bundles.
-
+   X25519 key, download, restore, re-issued bundles. A test-only config may shorten the 48-hour wait on a non-production Cloud; the production build must refuse it.
+   
 9. **Clock tampering.** Set the system clock backwards. The license grace
    period does not extend. The monotonic anchor never moves back.
 
@@ -145,7 +145,7 @@ documented manual run, not a claim.
 21. **Export in every licence state.** The Admin can export the full
     project (JSON + CSV + PDF) in each of: active licence, grace period,
     read-only (post-grace), restricted mode (critical-update deadline
-    passed), bootstrap (pre-activation), and licence-expired. The export
+    passed), unactivated (no licence row yet; bootstrap bundles are deferred — DEVIATIONS §1), and licence-expired. The export
     is identical in content across all states. Principle 14 verified.
 
 ## Replay and event integrity
@@ -155,15 +155,24 @@ documented manual run, not a claim.
     Replay through a missing build with no declared upcaster → loud
     failure, not silent drift.
 
-23. **Purge and erasure emit events.** Quota eviction emits
-    `tombstone.purged`. Erasure emits `resource.erased`. Both go through
-    `apply_event`. A silent `DELETE` on a Projected table → rebuild-and-diff
-    diverges.
+23. **Eviction emits an event.** Quota eviction emits `tombstone.purged`
+    through `apply_event`; a silent `DELETE` on a Projected table makes
+    rebuild-and-diff diverge. (`resource.erased` has no v1 command; its
+    handler is exercised by a fixture ledger row in test 8. See
+    DEVIATIONS §7.)
 
 24. **`is_in_signed_report` flag.** When a `report.signed` event lists a
     result id, that result's `is_in_signed_report` is set to 1 by
     `apply_event`. The flag is writeable only by `apply_event`; no command
     or patch sets it directly.
+25. **Contact cooling-off.** Add a contact, change the password, then start a recovery within 7 days: the new contact is not yet active; every original contact and the signup email are alerted; removing the signup email is refused; the cancel link aborts the case and audits it.
+
+26. **State tamper and new device.** Roll `admin_state.db` back to an older copy, or delete it while the keychain mirror remains → read-only immediately. On a device with neither file nor keychain key → read-only until first Cloud contact, anchor seeded from the signed Cloud time. An offline activation file older than 7 days is refused as an anchor source.
+
+27. **Corbeille lifecycle.** Delete a draft report → tombstone written and live row removed through an event; restore → row returns through an event; delete a company that has samples → refused; lower the licence-carried quota in a fixture → oldest tombstone evicted through `tombstone.purged`; try to delete a result or a signed report → refused. Rebuild-and-diff still matches.
+
+28. **Activation gate.** Before activation: module pages show "Activate to begin", the module's `initialise` command has not run (no reference data exists), export works. Activation requires a verified second factor. After activation and module install: `initialise` has emitted the seed events, and test 6 still passes.
+
 
 ## The gate
 

@@ -72,28 +72,29 @@ Revocation is local and immediate. The Admin records it in `membership_certs`; i
 
 ## Public endpoints (auth surface)
 
-POST /v1/accounts create account
-POST /v1/accounts/sessions login (password + second factor)
-POST /v1/accounts/sessions/refresh refresh session
-POST /v1/accounts/sessions/revoke logout / revoke
-POST /v1/accounts/mfa/enroll enroll WebAuthn or TOTP
-POST /v1/devices/register register device (both public keys)
-POST /v1/devices/{id}/challenge get auth challenge
-POST /v1/devices/{id}/verify submit signed challenge
-POST /v1/devices/{id}/replace replace device (Admin flow)
-POST /v1/devices/{id}/revoke revoke device
-POST /v1/projects/{id}/invitations invite user (opaque token)
-POST /v1/invitations/{token}/accept accept invitation (empty account)
-GET /v1/projects/{id}/memberships list memberships
-POST /v1/projects/{id}/memberships Admin assigns pending user
-DELETE /v1/projects/{id}/memberships/{userId} remove membership
-POST /v1/projects/{id}/module-access sync coarse module-access list
-GET /v1/membership-certificate this device's membership cert
-GET /v1/admin-authority-certificate the project's Admin authority cert
-POST /v1/recovery/initiate start recovery (ADR-022)
-POST /v1/recovery/cancel customer cancels the wait
-GET /v1/audit/auth auth audit log
-
+```
+POST   /v1/accounts                                  create account
+POST   /v1/accounts/sessions                         login (password + second factor)
+POST   /v1/accounts/sessions/refresh                 refresh session
+POST   /v1/accounts/sessions/revoke                  logout / revoke
+POST   /v1/accounts/mfa/enroll                       enroll WebAuthn or TOTP
+POST   /v1/devices/register                          register device (both public keys)
+POST   /v1/devices/{id}/challenge                    get auth challenge
+POST   /v1/devices/{id}/verify                       submit signed challenge
+POST   /v1/devices/{id}/replace                      replace device (Admin flow)
+POST   /v1/devices/{id}/revoke                       revoke device
+POST   /v1/projects/{id}/invitations                 invite user (opaque token)
+POST   /v1/invitations/{token}/accept                accept invitation (empty account)
+GET    /v1/projects/{id}/memberships                 list memberships
+POST   /v1/projects/{id}/memberships                 Admin assigns pending user
+DELETE /v1/projects/{id}/memberships/{userId}        remove membership
+POST   /v1/projects/{id}/module-access               sync coarse module-access list
+GET    /v1/membership-certificate                    this device's membership cert
+GET    /v1/admin-authority-certificate               the project's Admin authority cert
+POST   /v1/recovery/initiate                         start recovery (ADR-022)
+POST   /v1/recovery/cancel                           customer cancels the wait
+GET    /v1/audit/auth                                auth audit log
+```
 
 Recovery **approval** is a staff action on `/ops/*` (ADR-013). It is deliberately unreachable from the public API.
 
@@ -123,6 +124,15 @@ Email + password is allowed for account creation. Passwords are hashed with Argo
 
 **Security questions are never accepted as proof of anything.**
 
+
+## Account contacts and the cooling-off rule
+
+An account has **contacts**: the signup email (permanent) plus optional extra verified emails/phones. Recovery alerts (ADR-022) go to **every contact that is active or pending removal, to the original signup email, and to the Admin device of record**.
+
+- Adding, removing or changing a contact, changing the password, and enrolling or removing a second factor all take effect only after a **7-day cooling-off**. During cooling-off every existing contact is alerted with a cancel link.
+- The signup email can never be removed or replaced by anyone, including support. Changing it is itself a recovery case (ADR-022).
+- An open recovery case keeps the alert list it had when it opened; later edits cannot remove recipients from it.
+
 ## Session model — why a Cloud outage does not break the product
 
 **Cloud sessions are short-lived (15 minutes), rolling-refreshable, and gate Cloud API calls only.** The session token is a JWT signed by the auth service; refresh tokens are server-side and revocable.
@@ -144,6 +154,8 @@ Devices have their own keypair (Ed25519 + X25519), separate from the account. Th
 6. Device is now ACTIVE for that account.
 
 For subsequent operations, the device signs challenges with its Ed25519 key.
+
+Cloud ↔ device uses TLS 1.3 with certificate pinning to our CA **plus one backup pin**, so a CA rotation never bricks clients.
 
 ## Admin Device Replacement
 
@@ -190,7 +202,9 @@ Logs are append-only, hash-chained, and queryable by the customer (read-only) an
 - [ ] Replay of a signed challenge (same nonce) → rejected
 - [ ] Recovery initiation triggers alerts + waiting period; no release without quorum
 - [ ] Admin authority certificate issued at project creation, not at device registration
-
+- [ ] Contact added then recovery started within 7 days → the new contact is not yet active; the original contacts are still alerted
+- [ ] Removing the signup email → refused
+- [ ] Removing another contact → still alerts it for 7 days
 ## Alternatives Considered
 
 **Keycloak, Auth0, Clerk, WorkOS, Supabase Auth, Ory.** All rejected: OAuth/OIDC-centric, weak device-identity story, per-MAU pricing, vendor lock-in. Our auth is built around device identity and project-scoped sessions.

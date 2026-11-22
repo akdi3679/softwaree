@@ -246,7 +246,7 @@ Every update (core, app, module, **data, schema, logic**) follows one pipeline:
 **Update types:**
 
 - **Schema migration:** forward-only DDL with backfill in the same transaction
-- **Data patch:** a **typed operation** from an allow-list (`set_field`, `backfill_field`, `normalize_enum`, `soft_delete_rows`, `reindex`, `recompute_derived`), compiled to SQL locally by the Admin, with target-table allow-lists, row-count caps and a mandatory dry run. **Never raw SQL from the Cloud.**  , -- "rename_field is deliberately absent: it breaks expand/contract, so a rename is backfill_field + a code release + a later column drop."
+- **Data patch:** a **typed operation** from an allow-list (`set_field`, `backfill_field`, `normalize_enum`, `soft_delete_rows`, `reindex`, `recompute_derived`), compiled to SQL locally by the Admin, with target-table allow-lists, row-count caps and a mandatory dry run. **Never raw SQL from the Cloud.** `rename_field` is deliberately absent: it breaks expand/contract, so a rename is `backfill_field` + a code release + a later column drop.
 - **Logic module:** a signed, encrypted WASM bundle plus its signed UI (ADR-007, ADR-011)
 - **Security override:** force-revoke, force-rotate, applied to open sessions
 
@@ -347,7 +347,7 @@ Client binaries (Admin, User) are compiled with:
 
 - The User's command path checks Admin reachability before sending; no path bypasses it.
 - The Admin's command handler is the only writer of business tables; `apply_event` is the only projection writer.
-- Cloud signing keys live in a separate process (HSM in production); the main API cannot sign. The **patch key is separate again, offline, quorum-gated.**. The **app-updater key** is separate again, offline, quorum-gated (ADR-022).
+- Cloud signing keys live in a separate process (HSM in production); the main API cannot sign. The **patch key is separate again, offline, quorum-gated.** The **app-updater key** is separate again, offline, quorum-gated (ADR-022).
 - Entitlements are enforced by **what the Cloud will sign**, never by `if plan == X` in the client.
 - The private channel is unreachable by customers: ops-VPN binding, staff hardware keys, public listener returns 404 for `/ops/*`.
 

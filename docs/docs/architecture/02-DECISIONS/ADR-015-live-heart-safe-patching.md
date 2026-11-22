@@ -3,7 +3,7 @@
 Status: Accepted — amended 2026-11-22 (review pass 3: signing ceremony, row caps, key mapping, rename_field removed, manifest frozen_when rule)
 Date: 2026-11-20
 Deciders: Architecture team
-See also: ADR-005 (storage), ADR-006 (runtime), ADR-010 (updates), Principle 10
+See also: ADR-005 (storage), ADR-006 (runtime), ADR-010 (auth), Principle 10
 
 ## Context
 
@@ -16,7 +16,7 @@ The Cloud must be able to push updates to all Admin devices: app updates, core u
 Every update follows this pipeline:
 1. Discover (Cloud advertises new version)
 2. Download (Admin fetches signed artifact)
-3. Verify signature (Admin checks Cloud signature)
+3. Verify signature (against the embedded public key for this artifact type, §2)
 4. Snapshot (Admin takes pre-update snapshot of project.db)
 5. Acquire lock (no new commands, drain outbox)
 6. Dry run (if applicable, simulate the update)
@@ -48,7 +48,7 @@ Allowed operations:
 - normalize_enum (table, field, mapping)
 - soft_delete_rows (table, where)
 - reindex (table)
-- recompute_derived (module_id, function, where, frozen_when)
+- recompute_derived (module_id, function, where)
 
 rename_field is NOT an allowed operation. Renaming a column breaks the expand/contract rule. Instead, implement rename as:
 1. backfill_field to copy old column to new column.
@@ -59,13 +59,14 @@ The typed-op compiler enforces a row cap (default 10,000 rows per op; configurab
 
 recompute_derived operation:
 - Calls a signed pure function exported by the module (e.g., compute_verdict).
-- Only runs on rows never included in a signed report, checked via mod_food_lab_results.is_in_signed_report = 0 (set by apply_event from the report's frozen included_results — there is no FK). Rows inside a signed report are corrected by new rows, never recomputed (ADR-016 §6).
+- Only runs on rows that the module's manifest rule `derived[].frozen_when` does **not** mark frozen (ADR-007). For food-lab that rule is `is_in_signed_report = 1`, a flag set by `apply_event` when a `report.signed` event lists the result id (ADR-016 §6). The compiler reads the rule from the verified manifest; it never hard-codes a table name. Rows inside a signed report are corrected by new rows, never recomputed. (ADR-016 §6).
 - Records before/after counts and the rule_version change in the audit entry.
 
 3.1 Caps, dry-run expectations, and the patch envelope
 Default caps: 10,000 rows per op, 100,000 rows per patch. Exceeding a cap aborts before commit. Raising it requires re-issuing the patch with quorum approval.
 Every patch declares expected_dry_run. If the dry run disagrees, the patch aborts and reports to the Cloud.
 No arbitrary WHERE expressions, no subqueries, no user-supplied SQL strings. Filter is a typed enum.
+```json
 {
   "patch_id": "patch_...",
   "patch_version": 3,
@@ -81,15 +82,16 @@ No arbitrary WHERE expressions, no subqueries, no user-supplied SQL strings. Fil
   "kill_switch": { "instruction": "halt_and_restore", "signature": "..." },
   "patch_signature": "..."
 }
-
+```
 Rollout state is not in the envelope (§5), so advancing a ring never requires re-signing.
 3.2 Separate offline patch-signing key
 The Patch Signing Key is separate from the Cloud root, the signing-service key, the per-project licence key, the auth service, and the App-Updater Signing Key. Compromise of any of those does not enable patching.
 Held offline / cold. Signing happens in a recorded ceremony: quorum approval (ADR-013), hardware keys, signatures over the patch hash, ceremony log retained.
 The public patch key is embedded in the app alongside the Cloud root. Patches never verify against a runtime-fetched key.
-The pre-signed kill-switch is produced in the same ceremony, with the same patch key, so ops can halt without a new ceremony.
+The pre-signed kill-switch is produced in the same ceremony, with the same patch key, so ops can halt without a new ceremony. An offline key cannot be 'signed by each approver'. The Patch Signing Key signs **once**, on an air-gapped signing machine, and is usable only when the quorum of approvers (hardware keys) has authorised it. Each approver also signs an **attestation** with their own hardware key; the attestations and the signature go into the ceremony log in the owner audit chain (ADR-013). In solo mode (quorum 1) the 24-hour delay and the customer/owner alert apply.
 3.3 Patches go through apply_event
-The compiler produces row operations, not executed SQL. The host wraps them as patch.applied events and executes them through the single apply_event function (Principle 4). There is no second table mutator, and patches are therefore replayable by rebuild_projection.
+The compiler produces row operations, not executed SQL. The host wraps them as patch.applied events and executes them through the single apply_event function (Principle 4). There is no second table mutator, and patches are therefore replayable by rebuild_projection.The `patch.applied` event's payload is the **list of row operations the compiler produced** (not the typed ops), so replay applies the same row operations and never re-runs the compiler or a module function. Row operations are split into events of **≤ 1,000 ops** inside the same transaction.
+
 ### 4. Critical updates: restricted mode, not refuse-to-start
 Critical updates (security patches, data corruption fixes) have a deadline. If the deadline passes unapplied, the app enters restricted mode:
 - Business writes are refused.
@@ -99,18 +101,12 @@ Kill-switch:
 - Every critical update ships with a signed withdraw/halt artifact referencing its id.
 - The kill-switch is PRE-SIGNED at the patch-signing ceremony, not signed later. This guarantees it exists even if the signing key is later compromised or unavailable.
 - The app checks for withdrawal before enforcing a deadline.
+A kill-switch halts any critical update (data patch **or** app update) and is always verified against the **embedded Patch public key**.
+### 5. Ring rollouts (blast-radius control)
 
-### 5. Ring rollouts (blast radius control)
+Updates roll out in rings: 5% → 25% → 100% of projects (assignment is deterministic per project id). Rollout state lives **on the Cloud side**, not in the signed envelope, so advancing a ring never requires re-signing.
 
-Updates are rolled out in rings (5% -> 25% -> 100%). Rollout state lives on the Cloud side, not in the signed envelope.
-Rollout state on Cloud side → no re-signing needed to advance rings
-Row cap exceeded → abort before commit, no partial state
-Dry run disagrees with expected_dry_run → abort, report to Cloud
-Invalid patch signature → refuse; runtime-fetched key never trusted
-Kill-switch signed by the updater key instead of the patch key → refused
-Patch row ops executed outside apply_event → lint failure
-recompute_derived on a row with is_in_signed_report = 1 → refused
-Patch applied → rebuild_projection reproduces the post-patch state
+Health gates between rings: patch failure rate, dry-run mismatch rate, post-apply verification failures, app crash rate. A breach **halts the rollout automatically** and alerts ops. A human may halt but may not skip a gate.
 
 ### 6. Signing ceremony
 
@@ -157,3 +153,11 @@ Tests:
 - [ ] Patch exceeding row cap -> rejected at dry run
 - [ ] Kill-switch pre-signed at ceremony (exists before patch is shipped)
 - [ ] recompute_derived only runs on rows satisfying frozen_when rule
+- [ ] Rollout state on Cloud side → no re-signing needed to advance rings
+- [ ] Row cap exceeded → abort before commit, no partial state
+- [ ] Dry run disagrees with `expected_dry_run` → abort, report to Cloud
+- [ ] Invalid patch signature → refuse; runtime-fetched key never trusted
+- [ ] Kill-switch signed by the updater key instead of the patch key → refused
+- [ ] Patch row ops executed outside `apply_event` → lint failure
+- [ ] recompute_derived on a row the manifest `frozen_when` rule marks frozen → refused
+- [ ] Patch applied → `rebuild_projection` reproduces the post-patch state

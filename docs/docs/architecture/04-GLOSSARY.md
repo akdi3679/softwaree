@@ -11,6 +11,10 @@
 
 ## Systems and roles
 
+- **v1 (architecture)** — the architecture's first release: Admin + User apps, sync, mesh, two modules. 
+- **v1-foodlab** — the first *shippable milestone*: Admin-only, one module (food-lab), Plan 1+. 
+- **v1.1** — the milestone that adds the User app, sync, mesh, roles and per-resource keys. `v1/DEVIATIONS.md` lists exactly what v1-foodlab defers.
+
 **Admin** — the customer device that is the sole authoritative writer for one project. Also a server on the project mesh. May run headless on an always-on mini-PC.
 
 **User** — a customer device holding an authorized, disposable projection. Never writes business data.
@@ -55,7 +59,7 @@
 
 **Supersede** — a correction expressed as a new event referencing `supersedes_event_id`. History is never rewritten.
 
-**Table classes** — Projected business tables (change only via `apply_event`), Log tables (append-only), Host-state tables (not replayed from events). Defined in ADR-012 §4.
+**Table classes** — Projected business tables (change only via `apply_event`), Log tables (append-only), Host-state tables (not replayed from events). Defined in ADR-012 §5.
 ---
 
 ## Permissions and identity
@@ -92,7 +96,7 @@
 
 **Manifest** — canonical JSON (JCS) describing the module, its hashes, capabilities, tables and binding. Split into a module section (signed once at publish) and a binding section (per device).
 
-**Module section** — the part of the manifest identical for every device. Signed by `cloud_root` once at publish. Contains `module_id`, `module_version`, `api_version`, `binary_sha256`, `ui_sha256`, `migrations_sha256`, tables, commands, queries, pages, capabilities, sensitive_resources, rule_version, required_core_min.
+**Module section** — the part of the manifest identical for every device. Signed by `cloud_root` once at publish. Contains `module_id`, `module_version`, `api_version`, `binary_sha256`, `ui_sha256`, `migrations_sha256`, tables, commands, queries, pages, capabilities, sensitive_resources, derived, replay, rule_version, required_core_min.
 
 **Binding section** — the part of the manifest unique to each device. Signed by `project_license` and `device_bind`. Contains `project_id`, `license_id`, `license_expiry`, `device_pubkey`, `content_key_slot`, `ciphertext_sha256`, `issued_at`.
 
@@ -267,3 +271,13 @@
 **Quorum** — the number of approvals required for high-risk actions (publish, patch, escrow release). Default 2. Solo-owner mode: 1 hardware-key approval + mandatory delay + customer alert.
 
 **approvals_required** — the setting that controls quorum. Defined in ADR-013.
+
+## Additional terms
+- **Account contacts** — signup email plus verified extras; changes take effect after a 7-day cooling-off, and recovery alerts go to all of them (ADR-010).
+- **Backup Passphrase Wrapping Key** — Argon2id→HKDF key wrapping a manual or local-only Backup Key, never escrowed (ADR-022).
+- **Blob handle** — opaque reference to a stored binary that module UI uses instead of bytes, preventing large payloads from crossing the bridge (ADR-011).
+- **frozen_when** — manifest rule naming which rows `recompute_derived` must not touch (ADR-007/015).
+- **nat_behaviour** — NAT classification: `none` (public IP), `cone` (endpoint-independent mapping), `symmetric` (endpoint-dependent), or `unknown` (ADR-020).
+- **probe_token** — single-use token binding a probe echo to a heartbeat, preserving STUN anonymity (ADR-020).
+- **Recovery service** — isolated, minimal process that performs the KMS unwrap and re-wrap during assisted recovery, with no other network access (ADR-022).
+- **state_revision** — counter in `admin_state.db` mirrored in the OS keychain to detect rollback or tampering (ADR-014).

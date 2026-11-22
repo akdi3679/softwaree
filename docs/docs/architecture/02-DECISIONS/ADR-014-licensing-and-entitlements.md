@@ -21,10 +21,11 @@ Plans are data; the record schema is defined once in **ADR-021**. The Admin cach
 
 | State | Trigger | Behaviour |
 |---|---|---|
-| Active | signed licence, `valid_until` in the future (TTL 30 days) | full operation |
+| Active | signed licence, `license_expiry` in the future (TTL 30 days) | full operation |
 | Refreshing | any Cloud contact (target every 7 days) | licence re-issued, anchor updated |
-| Grace | `valid_until` passed, ≤ 14 days | full operation + prominent banner |
+| Grace | `license_expiry` passed, ≤ 14 days | full operation + prominent banner |
 | Read-only | grace exhausted, or billing suspended past dunning | allow-list below |
+| Restricted | critical patch deadline passed (ADR-015), independent of billing | same allow-list as Read-only |
 | Plan 1 | perpetual local licence (`license_expiry = null`) | never expires after activation |
 | Bootstrap | never activated, ≤ 30 days from first launch | standard modules only, zero Users (ADR-023) |
 
@@ -62,24 +63,33 @@ Why? If the anchor lived in project.db, a customer could restore an old backup (
 
 Schema in admin_state.db:
 
-   CREATE TABLE license_state (
-  project_id         TEXT PRIMARY KEY,
-  plan_id            TEXT NOT NULL,
-  plan_version       INTEGER NOT NULL,
-  licence_jcs        TEXT NOT NULL,   -- the signed licence payload, JCS
-  licence_sig        TEXT NOT NULL,   -- Ed25519, per-project licence key
-  license_expiry     TEXT,            -- NULL only for a Plan 1 perpetual licence
-  state              TEXT NOT NULL,   -- active|refreshing|grace|read_only|perpetual|bootstrap
-  monotonic_anchor   TEXT NOT NULL,   -- anchor value, RFC 3339
-  anchor_elapsed_ms  INTEGER NOT NULL DEFAULT 0,
-  last_seen_cloud_time TEXT,          -- last signed Cloud timestamp
-  anchor_source      TEXT NOT NULL,   -- 'cloud' | 'activation_file' | 'unknown'
-  updated_at         TEXT NOT NULL
-);
+  ```sql
+CREATE TABLE license_state (
 
+  project_id           TEXT PRIMARY KEY,
+  plan_id              TEXT NOT NULL,
+  plan_version         INTEGER NOT NULL,
+  licence_jcs          TEXT NOT NULL,   -- the signed licence payload, JCS
+  licence_sig          TEXT NOT NULL,   -- Ed25519, per-project licence key
+  license_expiry       TEXT,            -- NULL only for a Plan 1 perpetual licence
+state                TEXT NOT NULL,   -- active|refreshing|grace|read_only|perpetual|bootstrap
+  monotonic_anchor     TEXT NOT NULL,
+  anchor_elapsed_ms    INTEGER NOT NULL DEFAULT 0,
+  last_seen_cloud_time TEXT,
+  anchor_source        TEXT NOT NULL,   -- 'cloud' | 'activation_file' | 'unknown'
+  state_revision       INTEGER NOT NULL DEFAULT 1,
+  updated_at           TEXT NOT NULL
+);
+-- No row for a project = not activated yet (module inactive, export works).
+```
 license_expiry is nullable because a Plan 1 perpetual licence has no expiry. last_seen_cloud_time is stored because trusted_now reads it. licence_jcs + licence_sig are stored because the licence must be verified locally, not merely remembered.
-** custody of admin_state.db:** it is SQLCipher-encrypted with its own random key in the OS keychain; it is excluded from project backups by an explicit allow-list; and it carries a monotonic revision counter so a rolled-back or deleted file is detected and treated as expiry-unknown.
-New-device anchor seeding: a replacement device has no anchor history. It seeds monotonic_anchor from the signed licence's issued_at, sets anchor_source = 'cloud', and treats the project as grace-bounded until the first Cloud contact. It never seeds from the wall clock, and never from restored project data.
+**Custody of `admin_state.db`.** SQLCipher-encrypted with its own random key held in the OS keychain; excluded from project backups by explicit allow-list. A counter inside the file cannot detect that the file was rolled back, so the current `state_revision` is **also mirrored in the OS keychain**. On open:
+
+- keychain key present, but file missing or its revision lower than the mirror ⇒ **tamper** ⇒ expiry-unknown ⇒ read-only until the next Cloud contact;
+- neither file nor keychain key ⇒ **new device** ⇒ the rule below.
+
+**New-device rule (fail-closed).** A device with no anchor history (fresh install, replacement device after recovery, or both file and key gone) is **read-only until its first successful Cloud contact**. The anchor is then seeded from the **signed Cloud timestamp** in that response (`anchor_source = 'cloud'`). It is never seeded from the wall clock, never from a licence blob found on disk, and never from restored project data. An **offline activation file** (ADR-023 §5) may seed the anchor only if its signed `issued_at` is **no more than 7 days old** at import (`anchor_source = 'activation_file'`). Seeding from an old licence's `issued_at` would let anyone wipe the state files to regain up to a full licence period.
+
 
 
 Clock tampering defense:
@@ -88,7 +98,7 @@ trusted_now = max(last_seen_cloud_time, anchor + elapsed_local_time)
 elapsed_local_time is defined as: accumulated monotonic running time while the app is open, PLUS forward wall-clock deltas (capped at 24 hours per session) while the app is closed. This prevents a user from gaining idle time by rolling the clock back while the app is closed.
 
 Fail-closed rule: If the anchor file or row is deleted, the app treats it as expiry-unknown and immediately enters read-only mode (fail-closed). Deleting the anchor repeatedly cannot grant endless grace. The last audit-chain timestamp serves as a secondary floor.
-
+Expiry-unknown means read-only **immediately** until Cloud contact; there is no grace in this state.
 
 ## Consequences
 
@@ -103,29 +113,31 @@ Negative:
 - elapsed_local_time requires tracking monotonic time across app restarts.
 
 ## Enforcement
-Lint: no client code branches on a plan id or plan name for a capability decision.
-Lint: no project-operation handler reads a Cloud session token.
-Lint: license_state and the clock anchor are never written to project.db.
-The licence verification function is the only reader of license_state; the anchor update function is the only writer.
-Quotas and limits are read from the verified licence payload. Lint: no quota constant is read from a local settings table.
-The read-only allow-list is enforced at the command-handler boundary.
-Every export path is reachable in every billing state — CI asserts export works in active, grace, read_only, restricted, bootstrap, perpetual.
-Webhook handlers are idempotent and signature-verified.
-Plan edits require quorum approval and are audited (ADR-013).
-Tests
-Licence expired, ≤14 days → grace: full operation + banner
-Grace exhausted → read-only allow-list enforced; restore from corbeille denied
-Clock rolled back one year → expiry still enforced
-Restore an old backup → license_state unchanged; grace does not extend
-admin_state.db deleted or rolled back → expiry-unknown → grace → read-only
-admin_state.db opened without its keychain key → fails
-New device is read-only until first Cloud contact; anchor seeded from the signed Cloud time
-Plan 1 perpetual licence with license_expiry = NULL → loads and never expires
-Payment succeeds after suspension → full operation on next refresh
-Replayed billing webhook → no state change
-Downgrade with 12 users on Plan 3 → 10 active, 2 read-only, zero deletions
-Patched client claims Plan 4 → Cloud refuses to sign custom-module bundles
-New plan created in the Console → assignable with no code change
-Trial of Plan 1+ grants Plan 1+ limits, not Plan 3 limits
-- [ ] Trial of Plan 1+ grants Plan 1+ features for 14 days
-- [ ] Payment failure -> Grace period applies after TTL expires
+
+- Lint: no client code branches on a plan id or plan name for a capability decision.
+- Lint: no project-operation handler reads a Cloud session token.
+- Lint: `license_state` and the clock anchor are never written to `project.db`.
+- The licence verification function is the only reader of `license_state`; the anchor update function is the only writer.
+- Quotas and limits are read from the verified licence payload. Lint: no quota constant is read from a local settings table.
+- The read-only allow-list is enforced at the command-handler boundary.
+- Every export path is reachable in every billing state — CI asserts export works in `active`, `grace`, `read_only`, `restricted`, `bootstrap`, `perpetual`.
+- Webhook handlers are idempotent and signature-verified.
+- Plan edits require quorum approval and are audited (ADR-013).
+
+### Tests
+
+- [ ] Licence expired, ≤14 days → grace: full operation + banner
+- [ ] Grace exhausted → read-only allow-list enforced; restore from corbeille denied
+- [ ] Clock rolled back one year → expiry still enforced
+- [ ] Restore an old backup → `license_state` unchanged; grace does not extend
+- [ ] `admin_state.db` deleted, or older than its keychain revision mirror → read-only immediately until Cloud contact
+- [ ] Offline activation file older than 7 days → refused as an anchor source
+- [ ] `admin_state.db` opened without its keychain key → fails
+- [ ] New device is read-only until first Cloud contact; anchor seeded from the signed Cloud time
+- [ ] Plan 1 perpetual licence with `license_expiry = NULL` → loads and never expires
+- [ ] Payment succeeds after suspension → full operation on next refresh
+- [ ] Replayed billing webhook → no state change
+- [ ] Downgrade with 12 users on Plan 3 → 10 active, 2 read-only, zero deletions
+- [ ] Patched client claims Plan 4 → Cloud refuses to sign custom-module bundles
+- [ ] New plan created in the Console → assignable with no code change
+- [ ] Trial of Plan 1+ grants Plan 1+ limits, not Plan 3 limits

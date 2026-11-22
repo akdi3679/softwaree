@@ -45,12 +45,9 @@ Each device runs a **reachability self-test** on startup and periodically. The r
        match  → directly connected (public endpoint on-box)
        differ → behind NAT (router NAT or CGNAT)
 
-3. Test INBOUND reachability with an EXTERNAL PROBE
-   ⚠️ Connecting to my own public IP proves nothing: NAT hairpinning
-      makes that test fail on most routers even when the device IS reachable.
-   - Ask our probe service to send a UDP packet to the observed endpoint
-   - Probe arrives  → reachable from outside
-   - No probe       → not reachable (CGNAT, firewall, or UDP blocked)
+3. Send the heartbeat; the probe service sends a UDP challenge to the observed endpoint (ADR-020)
+   - Challenge arrives and is echoed → reachable from outside
+   - No challenge within 5 s → not reachable
    - Repeat with a TCP/443 probe to learn whether TCP fallback is needed
 
 4. Check IPv6

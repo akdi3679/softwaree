@@ -57,7 +57,7 @@ The WireGuard UDP port is per project (base 51820 + project index).
 3. Discovery lookup — GET /v1/discovery/lookup?project_id=…&virtual_ip=…
 4. Try the returned endpoint
 5. Discovery-coordinated UDP hole-punch — POST /v1/discovery/punch, 
-   then poll rendezvous
+   then poll rendezvous. A punch target learns of the request through `GET /v1/discovery/inbox` (ADR-020).
 6. Relay — customer-hosted, else opt-in blind relay (POST /v1/relay/session)
    TCP/443 carrier if UDP is blocked
 7. No path → ADMIN_UNKNOWN / ADMIN_OFFLINE on the User
@@ -85,6 +85,8 @@ Our Cloud runs a phone book:
 within a project. That is logged for 30 days and visible to the customer. 
 We never see contents, payloads or durations, and we do **not** claim zero 
 knowledge of contact intent (ADR-020).
+
+A punch target learns of a request through `GET /v1/discovery/inbox` (ADR-020).
 
 Customers may opt out; LAN, QR/manual pairing and relays still work.
 
@@ -194,8 +196,10 @@ Larger payloads are chunked.
 | `0x07` | `CommandRequest` | U → A | One-round-trip write |
 | `0x08` | `CommandResponse` | A → U | Applied sequence, or typed error |
 | `0x09` | `Purge` | A → U | Delete revoked resources + their keys |
-| `0x0A` | `SessionKeepalive` | both | 30 s liveness |
+| `0x0A` | `SessionKeepalive` | both | 30 s liveness; carries `cursor` and `acked_purge_version` |
 | `0x0B` | `Error` | both | Typed failure, then close if fatal |
+
+**Signatures.** Every `signature` field is an Ed25519 signature over the **JCS (RFC 8785) of the payload's JSON form, minus the `signature` field, with binary values base64url-encoded**. CBOR is transport encoding only and is never the signed input, so stored, cached and USB-carried payloads verify with the same bytes.
 
 Eleven frame types. There is no `CommandAckGotten`, `CommandApplyRequest`, 
 `CommandApplied` or `CommandApplyConfirm` — the five-message handshake was 
@@ -242,7 +246,7 @@ User rules:
 4. Set cursor = `range_end`.
 5. Never advance past a range not received.
 
-Max 500 events per batch. Larger gaps are split into consecutive batches, 
+Max 500 events or 8 MB per batch, whichever comes first; an event larger than 8 MB is sent alone. Larger gaps are split into consecutive batches, 
 or replaced by a snapshot.
 
 ---
@@ -313,7 +317,8 @@ SnapshotPayload {
   chunk_index, chunk_count,
   tables: { "proj_*": [ rows ] },
   keys: [ { resource_id, wrapped_key } ],  // resource keys wrapped to this
-                                           // member's X25519 key (ADR-012 §4)  signature                         // over the COMPLETE reassembled payload
+                                           // member's X25519 key (ADR-012 §4)  
+  signature  // over the JCS of the COMPLETE reassembled payload minus `signature`
 }
 ~~~
 
@@ -324,8 +329,8 @@ SnapshotPayload {
   - `partial` → insert the listed resources additively; never delete.
   - `module_refresh` → delete that module's rows, then insert; never touch 
     other modules.
-- Then unwrap and store the `keys`, set cursor = `sequence`, set 
-  `permission_version`.
+    - The Admin sends `partial` and `module_refresh` only when the member's cursor already equals `sequence`; they never move the cursor.
+- Then unwrap and store the `keys`, set cursor = sequence for scope full only; set permission_version always.
 - Re-applying the same `snapshot_id` is a no-op.
 - Incomplete transfer → `SnapshotRequest` for the missing chunks; after 
   60 s the User abandons and keeps its old cursor.
@@ -341,15 +346,14 @@ Purge {
                                                  // monotonic counter
   scope: "resources" | "resource_type" | "all",
   resources: [ { resource_type, resource_ids[] } ],
-  signature
+    signature                        // over the JCS of the payload minus `signature`
 }
 ~~~
 
 The User deletes the matching projection rows **and its local copies of 
 those resources' keys** in one transaction, drops its own cached snapshots 
 for those resources, and acknowledges by carrying `acked_purge_version` 
-(the highest contiguous purge_version applied) in its next `SyncRequest`. 
-Multiple pending purges are all covered this way. If module access was 
+(the highest contiguous purge_version applied) in its next `SessionKeepalive` (and in `SyncHello`/`SyncRequest` whenever those are sent). Multiple pending purges are all covered this way. If module access was 
 revoked, the bundle and unwrapped content key are deleted and frames 
 closed (ADR-011).
 
@@ -388,7 +392,7 @@ It can drop packets; it cannot read or forge them.
 | Surface | Limit |
 |---|---|
 | Frame | 16 MB |
-| Events per batch | 500 |
+| Events per batch | 500 or 8 MB, whichever comes first |
 | Snapshot chunk payload | 8 MB target |
 | Command payload | 1 MB |
 | Commands per device | 100 / s |
@@ -454,7 +458,7 @@ verification and applies atomically.
 - [ ] Snapshot > 16 MB → chunked, reassembled, applied atomically
 - [ ] Interrupted snapshot → old cursor retained, chunks re-requested
 - [ ] Re-applied `snapshot_id` → no-op
-- [ ] `Purge` → rows **and keys** deleted, caches dropped, `acked_purge_version` carried in next `SyncRequest`
+- [ ] `Purge` → rows **and keys** deleted, caches dropped, `acked_purge_version` carried in the next `SessionKeepalive`
 - [ ] Multiple pending purges → both applied; `acked_purge_version` reflects the higher one
 - [ ] LAN chosen when available, even with a working relay
 - [ ] Discovery down → cached endpoint and LAN still work

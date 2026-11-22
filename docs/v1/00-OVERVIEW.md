@@ -34,9 +34,7 @@ are added via forward-only migrations in v1.1:
 `resource_keys`, `blind_indexes`, `roles`, `role_permissions`,
 `member_roles`, `membership_certs`, `user_projections`, `mesh_peers`
 
-That is **8 new tables**, bringing the Admin total from 10 platform to
-10 platform (matching the big-doc ADR-012), `erasure_ledger` already
-exists, empty, in v1. The event log and command pipeline are unchanged.
+That is **8 new tables**, bringing the Admin platform total from 10 to **18** (matching big-doc ADR-012). `erasure_ledger` already exists, empty, in v1. The event log and command pipeline are unchanged.
 
 ## The 14 locks (non-negotiable in v1)
 
@@ -46,6 +44,8 @@ exists, empty, in v1. The event log and command pipeline are unchanged.
    `tombstones`, `profiles`, `project_meta`, `erasure_ledger`, `schema_version`
    exist in migration 001 (**10 platform tables**). Module tables are prefixed
    `mod_food_lab_*` (**9**). `schema_version` is keyed `(scope, version)`.
+   The 10 platform tables are created at project creation; the 9 module tables
+   are created when the module is installed (ADR-006).
 4. Storage is `projects/{project_id}/project.db`, path keyed by project_id
    even with one project.
 5. `modules/food_lab/` sits behind a `LabModule` trait shaped like the future

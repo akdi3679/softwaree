@@ -1,8 +1,8 @@
-02-DATA-MODEL.md
 # v1 Data Model — 19 tables
 
 All in `projects/{project_id}/project.db` (SQLite, SQLCipher-encrypted).
 **10 platform tables + 9 module tables.**
+The 10 platform tables are created at project creation (migration scope `platform`). The 9 module tables are created when the food-lab module is installed (migration scope `food-lab`, ADR-006). **19 describes a project with the module installed.**
 
 `erasure_ledger` is created **empty** in migration 001. It costs one CREATE TABLE,
 makes the restore path real and testable (ADR-016), and means v1.1 adds no table
@@ -34,6 +34,8 @@ tables match the live database exactly. Log tables are append-only and host-stat
 tables are not derived from events. Quota eviction emits `tombstone.purged` and
 erasure emits `resource.erased`, both through `apply_event`. A silent `DELETE` on
 a Projected table would make test #6 diverge.
+
+The rebuild scratch database is created by running the same migration scopes (`platform` + every installed module scope), then replaying events. Seed/reference data is part of the events (ADR-006).
 
 ## Boundary rules (PRINCIPLES §8, ADR-006)
 
@@ -89,7 +91,8 @@ CREATE TABLE license_state (
   monotonic_anchor     TEXT NOT NULL,
   anchor_elapsed_ms    INTEGER NOT NULL DEFAULT 0,
   last_seen_cloud_time TEXT,
-  anchor_source        TEXT NOT NULL,   -- 'cloud' | 'activation_file' | 'unknown'   state_revision       INTEGER NOT NULL DEFAULT 1,
+  anchor_source        TEXT NOT NULL,   -- 'cloud' | 'activation_file' | 'unknown'
+  state_revision       INTEGER NOT NULL DEFAULT 1,   -- mirrored in the OS keychain (ADR-014 §3)
   updated_at           TEXT NOT NULL
 );
 
@@ -178,7 +181,7 @@ CREATE TABLE events (
   resource_type      TEXT NOT NULL,                      -- 'sample'
   resource_id        TEXT NOT NULL,
   module_id          TEXT NOT NULL,                      -- 'food-lab' | 'platform'
-  module_version     TEXT NOT NULL DEFAULT '1.0.0',      -- replay pinning (ADR-006)
+  module_version     TEXT NOT NULL,                      -- replay pinning (ADR-006); for module_id='platform' this is the host core version, e.g. 'core@1.0.0'
   actor_id           TEXT NOT NULL,
   project_id         TEXT NOT NULL,
   tx_id              TEXT NOT NULL,                      -- groups one command's events
@@ -291,7 +294,7 @@ CREATE TABLE profiles (
 -- PRINCIPLES §11 corbeille. Soft-deleted row content, held per plan quota.
 -- NO hard_delete_after column: the 30-day recovery grace is a property of
 -- BACKUP RETENTION (ADR-016), not a second trash can. At quota, the oldest
--- tombstone is hard-deleted immediately and its resource key destroyed.
+-- tombstone is hard-deleted immediately (v1 has no per-resource keys — DEVIATIONS §7).
 CREATE TABLE tombstones (
   id            TEXT PRIMARY KEY,
   module_id     TEXT NOT NULL,
@@ -382,7 +385,8 @@ CREATE TABLE mod_food_lab_standards (
   id              TEXT PRIMARY KEY,
   category_id     TEXT NOT NULL REFERENCES mod_food_lab_categories(id),
   parameter_id    TEXT NOT NULL REFERENCES mod_food_lab_parameters(id),
-  version         INTEGER NOT NULL,
+  standard_version INTEGER NOT NULL,
+  version         INTEGER NOT NULL DEFAULT 1,
   sampling_plan   TEXT NOT NULL CHECK(sampling_plan IN
                   ('presence_absence','two_class','three_class','custom')),
   n_samples       INTEGER,
@@ -394,7 +398,7 @@ CREATE TABLE mod_food_lab_standards (
   is_active       INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL,
-  UNIQUE(category_id, parameter_id, version)
+  UNIQUE(category_id, parameter_id, standard_version)
 );
 
 -- Lot-level ICMSF decision (D-1). May stay empty in v1.
@@ -478,6 +482,13 @@ CREATE INDEX mod_food_lab_results_frozen ON mod_food_lab_results(is_in_signed_re
 -- Reports: PDF stored as BLOB inside the DB (ADR-016, ADR-005).
 -- included_results freezes which results were used at generation time,
 -- so Rule 2 ("rows never in a signed report") can be checked (03-UPDATES).
+-- Never SELECT * from this table; list queries must omit pdf_blob.
+-- The report.signed event payload includes included_results so apply_event can set is_in_signed_report (ADR-016 §6).
+-- Blob columns and replay: report.generated and settings.updated carry the blob as base64 in their payload (payload_format jcs-plain).
+-- Accepted for v1-foodlab: every PDF/logo exists twice (event log and table); list queries must never read events.payload or pdf_blob;
+-- a PDF larger than 10 MB is refused at generation with ValidationError (16 MB frame, base64 adds 33%).
+-- A later release may move blobs to a content-addressed table referenced by SHA-256 from the event, under a new payload_format.
+
 CREATE TABLE mod_food_lab_reports (
   id               TEXT PRIMARY KEY,
   sample_id        TEXT NOT NULL REFERENCES mod_food_lab_samples(id),
@@ -492,6 +503,7 @@ CREATE TABLE mod_food_lab_reports (
   status           TEXT NOT NULL DEFAULT 'draft'
                    CHECK(status IN ('draft','signed','delivered','superseded')),
   supersedes       TEXT REFERENCES mod_food_lab_reports(id),
+
   version          INTEGER NOT NULL DEFAULT 1,
   created_at       TEXT NOT NULL,
   updated_at       TEXT NOT NULL,
@@ -513,15 +525,17 @@ everything the host will grant. Undeclared imports are a load failure.
 Field names match the big-doc ADR-007 exactly: `module_version`, `api_version`,
 `required_core_min`.
 
+`module_hash` covers `JCS(module)`; `bundle_hash` covers `JCS(binding)` (ADR-007).
+
 ```json
 {
+  "module": {
   "module_id": "food-lab",
   "module_version": "1.0.0",
   "required_core_min": "1.0.0",
   "api_version": 1,
   "rule_version": 1,
   "binary_sha256": "<SHA-256 of plaintext binary.wasm>",
-  "ciphertext_sha256": "<SHA-256 of binary.wasm.enc as delivered>",
   "ui_sha256": {
     "ui/index.html": "<SHA-256>",
     "ui/module.js": "<SHA-256>",
@@ -530,42 +544,51 @@ Field names match the big-doc ADR-007 exactly: `module_version`, `api_version`,
   "migrations_sha256": {
     "migrations/001.sql": "<SHA-256>"
   },
-  "content_key_slot": "<Content Key wrapped to device X25519 pubkey>",
-  "device_pubkey": "<this device's Ed25519 public key>",
-  "project_id": "<project this bundle is licensed to>",
-  "license_id": "<Cloud licence record id>",
-  "license_expiry": "2026-12-15T00:00:00Z",
-  "issued_at": "2026-11-20T00:00:00Z",
   "tables": [
     "mod_food_lab_settings", "mod_food_lab_companies", "mod_food_lab_categories",
     "mod_food_lab_parameters", "mod_food_lab_standards", "mod_food_lab_sample_sets",
     "mod_food_lab_samples", "mod_food_lab_results", "mod_food_lab_reports"
   ],
-  "commands": [
-    { "name": "create_sample",   "permission": "food-lab.sample.create",
-      "writes": ["mod_food_lab_samples"],
-      "events": ["sample.created"], "offline_policy": "ADMIN_REQUIRED" },
-    { "name": "record_result",   "permission": "food-lab.result.record",
-      "writes": ["mod_food_lab_results"],
-      "events": ["result.recorded"], "offline_policy": "ADMIN_REQUIRED" },
-    { "name": "correct_result",  "permission": "food-lab.result.correct",
-      "writes": ["mod_food_lab_results"],
-      "events": ["result.corrected"], "offline_policy": "ADMIN_REQUIRED" },
-    { "name": "generate_report", "permission": "food-lab.report.generate",
-      "writes": ["mod_food_lab_reports"],
-      "events": ["report.generated"], "offline_policy": "ADMIN_REQUIRED" },
-    { "name": "sign_report",     "permission": "food-lab.report.sign",
-      "writes": ["mod_food_lab_reports"],
-      "events": ["report.signed"], "offline_policy": "ADMIN_REQUIRED" },
-    { "name": "supersede_report","permission": "food-lab.report.supersede",
-      "writes": ["mod_food_lab_reports"],
-      "events": ["report.superseded"], "offline_policy": "ADMIN_REQUIRED" }
-  ],
-  "queries": [
-    { "name": "list_samples",  "reads": ["mod_food_lab_samples"] },
-    { "name": "list_results",  "reads": ["mod_food_lab_results"] },
-    { "name": "get_standards", "reads": ["mod_food_lab_standards"] }
-  ],
+      "commands": [
+      { "name": "initialise", "permission": "food-lab.settings.initialise", "writes": ["mod_food_lab_settings", "mod_food_lab_parameters", "mod_food_lab_categories", "mod_food_lab_standards"], "events": ["settings.initialised", "parameter.created", "category.created", "standard.created"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "update_settings", "permission": "food-lab.settings.update", "writes": ["mod_food_lab_settings"], "events": ["settings.updated"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "create_company", "permission": "food-lab.company.create", "writes": ["mod_food_lab_companies"], "events": ["company.created"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "update_company", "permission": "food-lab.company.update", "writes": ["mod_food_lab_companies"], "events": ["company.updated"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "delete_company", "permission": "food-lab.company.delete", "writes": ["mod_food_lab_companies"], "events": ["company.deleted"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "create_category", "permission": "food-lab.category.create", "writes": ["mod_food_lab_categories"], "events": ["category.created"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "update_category", "permission": "food-lab.category.update", "writes": ["mod_food_lab_categories"], "events": ["category.updated"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "delete_category", "permission": "food-lab.category.delete", "writes": ["mod_food_lab_categories"], "events": ["category.deleted"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "create_parameter", "permission": "food-lab.parameter.create", "writes": ["mod_food_lab_parameters"], "events": ["parameter.created"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "update_parameter", "permission": "food-lab.parameter.update", "writes": ["mod_food_lab_parameters"], "events": ["parameter.updated"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "delete_parameter", "permission": "food-lab.parameter.delete", "writes": ["mod_food_lab_parameters"], "events": ["parameter.deleted"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "create_standard", "permission": "food-lab.standard.create", "writes": ["mod_food_lab_standards"], "events": ["standard.created", "standard.superseded"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "delete_standard", "permission": "food-lab.standard.delete", "writes": ["mod_food_lab_standards"], "events": ["standard.deleted"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "create_sample", "permission": "food-lab.sample.create", "writes": ["mod_food_lab_samples"], "events": ["sample.created"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "update_sample", "permission": "food-lab.sample.update", "writes": ["mod_food_lab_samples"], "events": ["sample.updated"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "set_sample_status", "permission": "food-lab.sample.set_status", "writes": ["mod_food_lab_samples"], "events": ["sample.status_changed"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "delete_sample", "permission": "food-lab.sample.delete", "writes": ["mod_food_lab_samples"], "events": ["sample.deleted"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "record_result", "permission": "food-lab.result.record", "writes": ["mod_food_lab_results"], "events": ["result.recorded"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "reanalyse_result", "permission": "food-lab.result.reanalyse", "writes": ["mod_food_lab_results"], "events": ["result.reanalysed"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "correct_result", "permission": "food-lab.result.correct", "writes": ["mod_food_lab_results"], "events": ["result.corrected"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "generate_report", "permission": "food-lab.report.generate", "writes": ["mod_food_lab_reports"], "events": ["report.generated"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "sign_report", "permission": "food-lab.report.sign", "writes": ["mod_food_lab_reports"], "events": ["report.signed"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "supersede_report", "permission": "food-lab.report.supersede", "writes": ["mod_food_lab_reports"], "events": ["report.superseded"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "delete_report", "permission": "food-lab.report.delete", "writes": ["mod_food_lab_reports"], "events": ["report.deleted"], "offline_policy": "ADMIN_REQUIRED" },
+      { "name": "restore_deleted", "permission": "food-lab.tombstone.restore", "writes": ["mod_food_lab_companies", "mod_food_lab_categories", "mod_food_lab_parameters", "mod_food_lab_standards", "mod_food_lab_samples", "mod_food_lab_results", "mod_food_lab_reports"], "events": ["entity.restored"], "offline_policy": "ADMIN_REQUIRED" }
+    ],
+     "queries": [
+      { "name": "list_samples", "reads": ["mod_food_lab_samples"] },
+      { "name": "get_sample", "reads": ["mod_food_lab_samples"] },
+      { "name": "list_results", "reads": ["mod_food_lab_results"] },
+      { "name": "get_standards", "reads": ["mod_food_lab_standards"] },
+      { "name": "list_companies", "reads": ["mod_food_lab_companies"] },
+      { "name": "list_categories", "reads": ["mod_food_lab_categories"] },
+      { "name": "list_parameters", "reads": ["mod_food_lab_parameters"] },
+      { "name": "list_reports", "reads": ["mod_food_lab_reports"] },
+      { "name": "get_report", "reads": ["mod_food_lab_reports"] },
+      { "name": "get_settings", "reads": ["mod_food_lab_settings"] },
+      { "name": "dashboard_summary", "reads": ["mod_food_lab_samples", "mod_food_lab_results"] }
+    ],
   "pages": ["Samples","SampleForm","SampleDetail","Standards","Categories","Companies","Reports"],
   "capabilities": {
     "filesystem": "none",
@@ -576,19 +599,35 @@ Field names match the big-doc ADR-007 exactly: `module_version`, `api_version`,
     "max_instances": 4,
     "max_payload_bytes": 1048576
   },
-  "sensitive_resources": ["sample", "result", "report"]
+  "sensitive_resources": ["sample", "result", "report"],
+  "derived": [
+    { "function": "compute_verdict", "table": "mod_food_lab_results",
+      "frozen_when": { "column": "is_in_signed_report", "equals": 1 } }
+  ],
+  "replay": { "events_unaffected": true, "upcasters": [] }
+  },
+  "binding": {
+    "project_id": "<project this bundle is licensed to>",
+    "license_id": "<Cloud licence record id>",
+    "license_expiry": "2026-12-15T00:00:00Z",
+    "issued_at": "2026-11-20T00:00:00Z",
+    "device_pubkey": "<this device's Ed25519 public key>",
+    "content_key_slot": "<Content Key wrapped to device X25519 pubkey>",
+    "ciphertext_sha256": "<SHA-256 of binary.wasm.enc as delivered>"
+  }
 }
 ```
 
 Shell owns 3 pages (Setup/Auth, Dashboard, Settings); the module declares 7 → **10 pages**.
 Capability values match PRINCIPLES §13 exactly.
+The corbeille list is a platform query provided by the shell (it reads `tombstones` filtered by `module_id`). A module manifest may never declare a read of a platform table.
 
 Each command carries a `permission` string (`module.resource.action`) so that
 v1.1 role-based authorization does not require changing the command code.
 
 ## Bundle layout (ADR-007, amended 2026-11-20)
 
-```
+```text
 bundle/
 ├── manifest.json                  ← module section + binding section, JCS canonical
 ├── manifest.sig.cloud_root        ← signs module_hash (ONCE at publish)
@@ -713,12 +752,11 @@ Genesis entry: `action='create'`, `entity_type='project'`, written at project cr
   licence payload, never from a local setting and never from `admin_state.db`.
   A patched local value gains nothing, because the Cloud signs the limit
   (ADR-014, ADR-021). At quota, the oldest tombstone is **hard-deleted immediately**
-  and its resource key destroyed. There is no `hard_delete_after` column and no
+  (v1 has no per-resource keys — DEVIATIONS §7). There is no `hard_delete_after` column and no
   second trash can — the 30-day recovery grace is a property of **backup retention**
   (ADR-016), not of the tombstones table.
 - `events`, `audit_entries`, `command_log`: never pruned in v1.
-- Soft delete writes a `tombstones` row **and** sets `is_active=0` / status `archived`,
-  in the same transaction. Restore reverses both.
+- **Soft delete (ADR-016 §1):** one `*.deleted` event through `apply_event` writes a `tombstones` row and deletes the live row in the same transaction. Allowed only when no live row references it. **Never deleted:** results, signed/delivered/superseded reports, samples that have results — these are *archived* by `status`/`is_active`, which is not a delete, writes no tombstone and is reversible by an ordinary update. Tombstonable in this milestone: companies, categories, parameters and standards without dependants, draft reports, draft samples without results. Restore reverses the event.
 
 ## What moves from Postgres triggers to Rust
 
