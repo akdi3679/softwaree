@@ -1,21 +1,34 @@
 # ADR-022: Key Custody and Recovery
 
-**Status:** Accepted — amended 2026-11-20
+**Status:** Accepted — amended 2026-11-20 (review pass 2)
 **Date:** 2026-11-20
-**Amended:** 2026-11-20 — headless service-unlock wrapper added; zero-knowledge corbeille grace clarified as customer-code-only
+**Amended:** backup escrow model corrected (per-backup wrapping to Escrow
+public key), password-wrapped keyring removed, app-updater signing key
+added, generated key count corrected to eight, Escrow Key marked asymmetric
 **Deciders:** Architecture team
-**See also:** ADR-005 (storage + backup procedure), ADR-007 (module content keys), ADR-008 (cache key), ADR-010 (auth + recovery initiation), ADR-013 (approvals), ADR-016 (erasure), Principle 9, Principle 14
+**See also:** ADR-005 (storage + backup), ADR-007 (module content keys),
+ADR-008 (cache key), ADR-010 (auth + recovery initiation),
+ADR-013 (approvals), ADR-016 (erasure), Principle 9, Principle 14
 
-> **This ADR is the authoritative key hierarchy.** Any other document that lists keys is a view of this one. If they disagree, this ADR wins.
+> **This ADR is the authoritative key hierarchy.** Any other document that
+> lists keys is a view of this one. If they disagree, this ADR wins.
 
 ---
 
 ## Context
 
-Two claims in the earlier design were wrong or dishonest:
+Two claims in the earlier design were wrong:
 
-1. **"The database key is derived from the device's hardware-backed signing key."** An Ed25519 signing key cannot perform key derivation, and reusing one key for two purposes is a defect. The key model must be explicit.
-2. **"The Cloud cannot read your backups."** In the default recovery mode the Cloud holds a wrapped copy of the backup key, so it *can* decrypt — the honest claim is that it can only do so through a controlled, audited, customer-alerted procedure. Customers choosing a regulated product deserve the precise statement, not the comfortable one.
+1. **"The database key is derived from the device's signing key."**
+   Ed25519 cannot perform key derivation. One key must never serve two
+   purposes.
+2. **"The Cloud cannot read your backups."** In assisted mode the Cloud
+   holds a wrapped key, so it *can* decrypt — but only through a
+   controlled, audited, customer-alerted procedure.
+
+A third problem was found in review: **"Backup Key escrowed at creation"**
+is impossible, because the Backup Key is random per backup and does not
+exist at project creation.
 
 ## Decision
 
@@ -25,207 +38,284 @@ Two claims in the earlier design were wrong or dishonest:
 
 | # | Key | Scope | Algorithm | Lives in | Purpose |
 |---|---|---|---|---|---|
-| 1 | **Device Signing Key** | device | Ed25519 | OS keychain | Identity, challenge signing, frame signing. **Never encryption, never derivation.** |
-| 2 | **Device Encryption Key** | device | X25519 | OS keychain | Receives wrapped module Content Keys (ADR-007) |
-| 3 | **Project Master Key** | project | random 32 B | OS keychain | Wraps `keys/keyring.enc` |
-| 4 | **Project DB Key** | project | random 32 B | inside keyring | SQLCipher encryption of `project.db` |
-| 5 | **Project Keyring Key** | project | random 32 B | inside keyring | Wraps per-resource content keys in `resource_keys` (ADR-016) |
-| 6 | **Project Blind Index Key** | project | random 32 B | inside keyring | HMAC blind indexes for searchable sensitive fields (ADR-016) |
-| 7 | **Projection Cache Key** | project | random 32 B | inside keyring | Encrypts `snapshots/projection-cache/` (ADR-008) |
-| 8 | **Backup Key** | **one per backup** | random 32 B | wrapped, see §2 | AES-256-GCM encryption of one backup archive |
+| 1 | **Device Signing Key** | device | Ed25519 | OS keychain | Identity, signatures. Never encryption, never derivation. |
+| 2 | **Device Encryption Key** | device | X25519 | OS keychain | Receives wrapped module Content Keys and transfer bundles. |
+| 3 | **Project Master Key** | project | random 32 B | OS keychain | Wraps `keys/keyring.enc`. |
+| 4 | **Project DB Key** | project | random 32 B | inside keyring | SQLCipher encryption of `project.db`. |
+| 5 | **Project Keyring Key** | project | random 32 B | inside keyring | Wraps per-resource content keys (ADR-016). |
+| 6 | **Project Blind Index Key** | project | random 32 B | inside keyring | HMAC blind indexes (ADR-016). |
+| 7 | **Projection Cache Key** | project | random 32 B | inside keyring | Encrypts `snapshots/projection-cache/` (ADR-008). |
+| 8 | **Backup Key** | one per backup | random 32 B | wrapped, see §2 | AES-256-GCM encryption of one backup archive. |
 
-**Derived wrapping keys (2 types, from customer secrets, never stored):**
+**Derived wrapping keys (from customer secrets, never stored):**
 
 | Key | Derived from | Purpose |
 |---|---|---|
-| **Recovery Code Wrapping Key** | Argon2id(customer recovery code) → HKDF-SHA-256 | Zero-knowledge mode: wraps the Backup Key |
-| **Manual Passphrase Wrapping Key** | Argon2id(customer passphrase) → HKDF-SHA-256 | Plan 4 manual backups: wraps the Backup Key. **Never escrowed.** |
+| **Recovery Code Wrapping Key** | Argon2id(recovery code) → HKDF-SHA-256 | Zero-knowledge mode: wraps the Backup Key |
+| **Backup Passphrase Wrapping Key** | Argon2id(backup passphrase) → HKDF-SHA-256 | Manual (Plan 4) and **local-only** backups: wraps the Backup Key. **Never escrowed.** |
+
+Neither is the account password. The account password is an unlock verifier and derives nothing (§3). These two are the **only** places Argon2 output becomes key material, and they take distinct input types so a mix-up fails the build.
 
 **Cloud-side custody key (1):**
 
-| Key | Scope | Lives in | Purpose |
-|---|---|---|---|
-| **Escrow Key** | per project | HSM / KMS | Assisted mode: wraps the Backup Key. Release requires the ceremony in §3. |
 
-**Cloud signing keys (4, defined in ADR-007 and ADR-015, listed here for completeness):**
+| Key | Scope | Type | Lives in | Purpose |
+|---|---|---|---|---|
+| **Escrow Key** | per project | **Asymmetric** (X25519 keypair) | Cloud HSM / KMS | Public key given to the device at registration. Private key stays in HSM. |
+
+**Cloud signing keys (5, defined in ADR-007, ADR-015, and below):**
 
 | Key | Lives in | Rotation |
 |---|---|---|
-| Cloud Root Key | HSM | annually, with one app-release overlap |
-| Cloud Signing Service Key | HSM-backed service, delegated cert | 90 days |
+| Cloud Root Key | HSM | Annually, one app-release overlap |
+| Cloud Signing Service Key | HSM-backed, delegated cert | 90 days |
 | Per-Project Licence Key | Cloud, certified by root | 90 days or on plan change |
-| **Patch Signing Key** | **offline / cold** | ceremony only, two-person (ADR-015) |
+| Patch Signing Key | **Offline / cold** | Ceremony only, quorum (ADR-015)|
+| **App-Updater Signing Key** | **Offline / cold** | Ceremony, quorum approval; rotated by an update signed by both old and new keys |
 
-**Transport keys** (WireGuard session keys) are ephemeral, generated by the protocol, rotated automatically, and never custodied by anyone. They are not part of this hierarchy.
+**Transport keys** (WireGuard session keys) are ephemeral, generated by
+the protocol, rotated automatically. Not part of this hierarchy.
 
-**Headless service mode.** For an always-on Admin (ADR-002), the Project Master Key may additionally be wrapped by a **service unlock secret** in the OS service-account credential store, so the service starts unattended. Opt-in per project; see ADR-005. It never changes the key hierarchy — it only adds one more wrapper around the Project Master Key.
+**Headless service mode.** For an always-on Admin (ADR-002), the Project
+Master Key may additionally be wrapped by a service unlock secret in the
+OS service-account credential store. Opt-in per project (ADR-005).
 
-**Rules that follow from the table:**
+**Rules:**
 - No key is derived from a signing key.
 - No key serves two purposes.
-- The account password is **never** a data key. The only password-derived artifact is an optional local unlock/replacement wrapper (ADR-005) that wraps a random key.
+- The account password is **never** a data key.
 - Every generated key is a random 32-byte secret from a CSPRNG.
 
-### 2. Two custody modes, chosen per project, stated honestly
+### 2. Backup escrow — corrected model
 
-The backup archive is encrypted with a fresh **Backup Key**. What differs between modes is **who can unwrap that key**.
+The Backup Key is random per backup. It does not exist at project
+creation. Therefore "escrowed at creation" was impossible. The corrected
+flow:
 
-**Assisted recovery (default).**
-The Backup Key is wrapped by the project's **Escrow Key** in the Cloud HSM. The Cloud therefore *can* decrypt a backup — but only by performing the ceremony in §3.
-
-> The claim we make in this mode: **"We cannot read your backups without a controlled, audited recovery that alerts you and requires two of our staff."**
-> The claim we never make in this mode: "we can't read your backups."
-
-**Zero-knowledge mode.**
-The Backup Key is wrapped **only** by the Recovery Code Wrapping Key. The Cloud stores no usable key material.
-
-> The claim we make: **"We cannot decrypt your backups at all. If you lose the recovery code, your Cloud backups are unrecoverable — nobody can help you."**
-
-Mechanics of the recovery code: 256 bits of CSPRNG entropy, rendered as a 24-word mnemonic **and** a downloadable file, shown once at enrolment, with a mandatory confirmation step where the customer re-enters a subset. Rotating the code re-wraps future Backup Keys; **previously uploaded backups keep their old wrapping**, so the customer is told to keep the old code until those backups rotate out.
-
-**Plan 4 manual backups** additionally offer the Manual Passphrase Wrapping Key. A passphrase-wrapped backup is **never escrowed**, in either mode. Forgotten passphrase = unrecoverable archive, by design.
-
-**Mode switching** is a deliberate, audited project action. It applies to **future** backups; existing archives keep their original wrapping until retention removes them. The UI states this explicitly rather than implying an instant re-encryption of history.
-
-### 3. The escrow release ceremony (assisted mode)
-
-Release is a procedure, not a permission check.
-
+**At project registration:**
 ```
-1. Customer initiates recovery (POST /v1/recovery/initiate) and re-authenticates
-   with their second factor (hardware key preferred)
-2. Cloud opens a recovery case and immediately:
-     - alerts EVERY contact on the account, out of band, with a cancel link
-     - starts a mandatory waiting period (default 48 hours)
-     - notifies the Admin device of record, if it is still reachable
-3. Two staff members (owner role) independently approve in the Owner Console
-     - approver != requester, enforced in code
-     - both identities and both signatures recorded
-4. Only after the waiting period AND both approvals does the HSM unwrap the
-   Backup Key for the specific archive requested
-5. Every step is written to the hash-chained owner audit chain (ADR-013)
-6. The customer receives the outcome, including who approved it
+1. Device calls POST /v1/projects
+2. Cloud creates the project record
+3. Cloud generates an Escrow Key (X25519 keypair) for this project
+4. Cloud stores the private key in the HSM
+5. Cloud returns the Escrow PUBLIC key in the registration response
+6. Device stores the Escrow public key locally
 ```
 
-**Security questions are never accepted as proof of anything.** They are the weakest link in every account-takeover story.
-
-Break-glass exists (ADR-013) and is deliberately unpleasant: 60-minute window, two independent staff confirmations, alerts to all owner contacts, mandatory written post-incident review.
-
-### 4. Recovery flows
-
-**Admin device replaced, current device available:**
+**At each backup:**
 ```
-1. Current Admin authorises the replacement (ADR-010)
-2. New device generates its own two keypairs
-3. Project data moves via local copy or the latest backup
-4. Cloud marks the new device ACTIVE, bumps revocation_epoch,
-   issues a new Admin authority certificate
-5. Module bundles are re-issued bound to the new device (ADR-007)
-6. Users verify the new authority certificate and resync (ADR-012)
+1. Admin generates a random Backup Key (32 bytes)
+2. Admin encrypts the archive with AES-256-GCM(Backup Key)
+3. Admin wraps the Backup Key to the Escrow PUBLIC key (X25519 + HKDF + AES-GCM)
+4. Admin uploads: ciphertext + wrapped Backup Key
+5. Cloud stores both. It CANNOT unwrap (private key is in HSM).
 ```
 
-**Admin device lost, assisted mode:** the ceremony in §3 releases the Backup Key; restore follows ADR-005 §Restore, including **re-applying the erasure ledger before the project becomes writable** (ADR-016).
+**At recovery:**
+```
+1. Customer initiates recovery (POST /v1/recovery/initiate)
+2. Cloud opens a recovery case:
+   - alerts EVERY contact on the account, out of band, with a cancel link
+   - starts a mandatory waiting period (default 48 hours)
+   - notifies the Admin device of record, if reachable
+3. The quorum approves (owner role, ADR-013):
+   - approver != requester, enforced in code
+   - both identities and signatures recorded
+4. After waiting period AND approvals:
+   HSM unwraps the Backup Key from the archive's wrapped copy
+5. HSM re-wraps the Backup Key to the NEW device's X25519 public key
+6. New device receives the re-wrapped Backup Key
+7. New device decrypts the archive → Project Master Key → keyring → DB Key
+8. Restore proceeds (ADR-005), including erasure ledger re-application
+9. Every step written to the owner audit chain (ADR-013)
+```
 
-**Admin device lost, zero-knowledge mode:** the customer supplies their recovery code. No staff involvement is possible or needed. No code → no recovery. The local device, if it still exists, is unaffected — zero-knowledge affects **Cloud backup recovery only**, not day-to-day operation.
+**Security questions are never accepted as proof.**
 
-This also governs the corbeille's 30-day hard-delete grace (ADR-016): in zero-knowledge mode that recovery is **customer self-service with the recovery code**, never support-assisted, because staff hold no key.
+**Zero-knowledge mode:** the Backup Key is wrapped only to the customer's
+Recovery Code Wrapping Key (Argon2id → HKDF-SHA-256). The Cloud stores
+nothing usable. No staff path exists. Lost code = lost data.
 
-**Lost account password:** reset via the second factor. This does **not** unlock any data key, because no data key is derived from the password.
+**Plan 4 manual backups:** the Backup Key is wrapped by Argon2id(passphrase).
+Never escrowed. Forgotten passphrase = unrecoverable archive.
 
-**Lost second factor:** recovery case with the same waiting period and alerts. Never a silent reset.
+### 3. No password-wrapped keyring
+
+The earlier design kept a local keyring copy wrapped by Argon2id(password).
+This is **removed**. A thief with the disk could brute-force the password
+offline and skip the keychain entirely, defeating the two-gate model.
+
+The password is an **app-unlock gate only**. It authenticates the session.
+It does not wrap keys.
+
+**Planned device move** (old device available):
+```
+1. Old device creates a transfer bundle:
+   Project Master Key + keyring contents, wrapped to the NEW device's
+   X25519 public key
+2. Transfer via local network or USB
+3. New device unwraps with its X25519 private key
+4. New device stores in its own keychain
+```
+
+**Local-only backups** (Plan 1, and "take local backup" in read-only mode):
+wrapped by Argon2id(customer passphrase). Never escrowed. Customer
+chooses the passphrase at backup time. Forgotten passphrase =
+unrecoverable local backup.
+
+### 3.1 Keyring file format (frozen)
+
+keys/keyring.enc = AES-256-GCM(
+Project Master Key,
+JCS({
+"format": 1,
+"db_key": "<Project DB Key, base64>",
+"keyring_key": null, // reserved — resource keys, v1.1
+"blind_index_key": null, // reserved — blind indexes, v1.1
+"cache_key": null // reserved — projection cache, v1.1
+})
+)
+
+The slots exist as `null` from day one. Adding them in v1.1 is a **code change, not a format change**. `keys/keyring.enc` is in every backup archive, and the Project Master Key is in the archive too (encrypted by the Backup Key), so the archive is self-contained. There is **no** second copy wrapped by a password.
+
+**Consequence, disclosed:** with the password copy removed, losing the OS keychain on the *same* machine (OS reinstall, keychain corruption) is no longer recoverable locally. Recovery requires a backup or a planned transfer bundle. This is stated in onboarding.
+
+### 3.2 Recovery code mechanics
+
+256 bits of CSPRNG entropy, rendered as a **24-word mnemonic and a downloadable file**, shown **once** at enrolment, with a mandatory confirmation step where the customer re-enters a subset. Rotating the code re-wraps **future** Backup Keys; previously uploaded backups keep their old wrapping, so the customer is told to keep the old code until those archives rotate out.
+
+### 3.3 Mode switching
+
+Switching custody mode is a deliberate, audited project action. It applies to **future** backups only; existing archives keep their original wrapping until retention removes them. The UI says so rather than implying instant re-encryption of history.
+
+### 3.4 Lost credentials
+
+- **Lost account password:** reset via the second factor. This unlocks no data key, because no data key is derived from the password.
+- **Lost second factor:** recovery case with the same waiting period and alerts. Never a silent reset.
+- **Lost recovery code (zero-knowledge):** Cloud backups are unrecoverable. Nobody can help. Said plainly, repeatedly.
+- **Lost backup passphrase:** that archive is unrecoverable. Other archives unaffected.
+
+### 4. App-Updater Signing Key
+
+The app-updater signing key (`tauri-plugin-updater`) is a separate
+offline key. If compromised, an attacker gets code execution on every
+Admin PC — worse blast radius than the patch key.
+
+- Held offline / cold.
+- Quorum approval for use (ADR-013 `approvals_required` setting).
+- Rotated by an update signed by **both** old and new keys, so clients
+  trust the transition.
+- Listed in the key table above and in THREAT-MODEL.
+- Code-signing certificates (Apple notarization, Windows Authenticode)
+  procured early in Phase 0 — lead time is weeks.
 
 ### 5. Rotation
 
 | Key | Rotation | Effect on old data |
 |---|---|---|
-| Device keypairs | on device replacement | old pubkey revoked; old module bindings fail |
-| Project Master Key | on device replacement or suspected compromise | keyring re-wrapped; data keys unchanged |
-| Project DB Key | on suspected compromise | SQLCipher rekey; new backups use the new key |
-| Project Keyring Key | on suspected compromise | resource keys re-wrapped |
-| Project Blind Index Key | on suspected compromise | indexes rebuilt |
-| Projection Cache Key | on suspected compromise | cache dropped and rebuilt (it is rebuildable) |
-| Backup Key | **every backup** | none — archives are independent |
-| Recovery code | customer-initiated | future backups only; keep the old code until old archives expire |
-| Escrow Key | HSM rotation, per project | future backups only |
-| Cloud signing keys | see ADR-007 / ADR-015 | overlap windows preserve verification |
+| Device keypairs | On device replacement | Old pubkey revoked; old bindings fail |
+| Project Master Key | On replacement or suspected compromise | Keyring re-wrapped |
+| Project DB Key | On suspected compromise | SQLCipher rekey |
+| Project Keyring Key | On suspected compromise | Resource keys re-wrapped |
+| Project Blind Index Key | On suspected compromise | Indexes rebuilt |
+| Projection Cache Key | On suspected compromise | Cache dropped and rebuilt |
+| Backup Key | Every backup | None — archives independent |
+| Recovery code | Customer-initiated | Future backups only |
+| Escrow Key | HSM rotation, per project | Future backups only. **The retired private half must be retained in the HSM until every archive wrapped to its public half has aged out** — otherwise old backups become unrecoverable. Rotation is additive, never destructive. |
+| Cloud signing keys | See ADR-007 / ADR-015 | Overlap windows |
+| App-Updater Signing Key | Ceremony, quorum | Dual-signed transition update |
 
 ### 6. What we say in the UI
 
-At enrolment, and again at every manual backup, the customer sees one of two plain sentences — not a checkbox buried in settings:
+At enrolment, and again at every manual backup:
 
-- **Assisted:** "We keep a locked copy of your backup key. Two of our staff, a 48-hour wait, and an alert to you are required before it can be used. You can cancel it."
-- **Zero-knowledge:** "Only your recovery code can open these backups. We cannot help if you lose it. Print it and store it safely."
+- **Assisted (quorum ≥ 2):** "We keep a locked copy of your backup key. Two of our staff, a 48-hour wait, and an alert to you are required before it can be used. You can cancel it."
+- **Assisted (solo deployment, quorum = 1):** "We keep a locked copy of your backup key. One of our staff, an internal 24-hour delay, a 48-hour wait, and an alert to you are required before it can be used. You can cancel it."
+
+The rendered string is **generated from the deployment's `approvals_required`** (ADR-013 §3). A solo deployment showing the two-person text is a false claim and fails CI.
+- **Zero-knowledge:** "Only your recovery code can open these backups.
+  We cannot help if you lose it. Print it and store it safely."
 
 ---
 
 ## Consequences
 
 ### Positive
-- The key model is implementable: random keys, separate purposes, no impossible derivation.
-- The privacy claim is true in both modes, because each mode states exactly what it can and cannot do.
-- Recovery is a slow, loud, two-person procedure — the opposite of a social-engineering shortcut.
-- Erasure survives restore, because the ledger is re-applied before write access returns.
-- Headless operation works without weakening the model for interactive projects.
+- Implementable: random keys, separate purposes, no impossible derivation.
+- Privacy claim true in both modes.
+- Recovery is a slow, loud, quorum-approved procedure.
+- Erasure survives restore (ledger re-applied).
+- Backup escrow model is technically correct (per-backup wrapping).
+- No offline brute-force path via password-wrapped keyring.
 
 ### Negative
-- Nine generated key types plus wrappers is real key-management surface. Mitigated by one keyring file and one keychain entry per project.
-- The 48-hour wait is painful during a genuine disaster. That is the trade the customer is buying; we surface it clearly at purchase time.
-- Zero-knowledge mode will produce unrecoverable data for some customers. We must be blunt about it, repeatedly, rather than optimistic.
-- The service-unlock wrapper reduces stolen-disk protection for headless projects. It is opt-in and disclosed.
+- Eight generated key types plus wrappers. Mitigated by one keyring file.
+- 48-hour wait is painful during a genuine disaster. Surfaced at purchase.
+- Zero-knowledge will produce unrecoverable data for some customers.
+- App-updater key adds another offline key to manage.
 
 ### Neutral
-- The Escrow Key never leaves the HSM; unwrap happens inside it.
-- Backup archives are self-contained: the Backup Key alone unlocks the Master Key, the keyring, and the database.
+- Escrow Key is asymmetric. The private key never leaves the HSM.
+- Backup archives are self-contained: Backup Key unlocks everything.
 
 ---
 
 ## Alternatives Considered
 
-**Derive the DB key from the device signing key.** Rejected: cryptographically impossible with Ed25519, and key reuse across purposes is a defect.
+**Derive DB key from device signing key.** Rejected: impossible with
+Ed25519, key reuse is a defect.
 
-**One "project recovery key" for everything.** Rejected: it collapses signing, encryption, indexing and caching into one blast radius.
+**One "project recovery key" for everything.** Rejected: collapses
+signing, encryption, indexing, caching into one blast radius.
 
-**Zero-knowledge only.** Rejected as the default: most customers who lose a device would lose their business. Offered as an explicit choice instead.
+**Password-wrapped keyring copy.** Rejected: offline brute-force risk.
 
-**Assisted only.** Rejected: some regulated customers require that we provably cannot read their data. They get a mode where that is true.
+**Escrow at creation.** Rejected: Backup Key does not exist at creation.
 
-**Escrow protected by a single staff approval.** Rejected: one compromised or coerced account would be enough.
+**Support-assisted recovery in zero-knowledge mode.** Rejected: impossible.
 
-**Instant recovery with no waiting period.** Rejected: the wait is what makes a stolen-account attack detectable and cancellable.
-
-**Security questions as a fallback.** Rejected absolutely.
-
-**Support-assisted recovery in zero-knowledge mode.** Rejected: impossible by definition; staff hold no key. It would be a false promise.
-
-**Interactive biometric for headless services.** Rejected: a headless service has no biometric prompt. The service-unlock wrapper is the honest alternative.
+**Interactive biometric for headless services.** Rejected: no biometric
+prompt. Service-unlock wrapper is the honest alternative.
 
 ---
 
 ## Enforcement
 
-- Lint: no key derivation function may take a signing key as input.
-- Lint: no code path may write a plaintext key to disk, logs, or telemetry.
-- The HSM unwrap call is reachable only from the recovery service, and only with a case id carrying two approvals and an elapsed waiting period.
-- `approver_id != requester_id` enforced in code, not policy.
-- Every unwrap writes an audit entry **in the same transaction** as the release.
-- Restore cannot mark a project writable until the erasure ledger has been re-applied (ADR-016).
-- The UI text for both modes is a tested string, not free-form copy.
-- The service-unlock wrapper is only applied when the project is flagged headless, and is logged at creation.
+- Lint: no key derivation function takes a signing key as input.
+- Lint: no code path writes a plaintext key to disk, logs, or telemetry.
+- Lint: no Argon2 output derived from the **account password** is used as key material. Argon2id on a **recovery code** or **backup passphrase** is required and permitted (§1, derived keys). The two paths are separate functions with distinct input types; passing the account-password type to a key-derivation function fails the build.
+- HSM unwrap reachable only from recovery service with valid case id.
+- `approver_id != requester_id` enforced in code at quorum ≥ 2. At quorum = 1 it is explicitly relaxed, with the 24-hour delay, the alert and the `solo_approval` audit flag (ADR-013 §3).
+- Break-glass follows ADR-013 §2.4: 60-minute window, quorum confirmations, alerts to all owner contacts, mandatory written review.
+- Every unwrap writes an audit entry in the same transaction.
+- Restore cannot mark a project writable until erasure ledger re-applied.
+- UI text for both modes is a tested string.
+- App-updater key usage requires quorum approval and is logged.
 
 ### Tests
-- [ ] Signing key cannot be used for key agreement or derivation (type-level + runtime)
-- [ ] `keyring.enc` is ciphertext without the keychain entry
-- [ ] Backup archive opens with the Backup Key and with nothing else
-- [ ] Assisted release blocked before 48 h
-- [ ] Assisted release blocked with one approval
+- [ ] Signing key cannot be used for key agreement or derivation
+- [ ] keyring.enc is ciphertext without the keychain entry
+- [ ] Backup archive opens with Backup Key and nothing else
+- [ ] Escrow public key returned at registration
+- [ ] Each backup wraps its own key to the Escrow public key
+- [ ] Recovery blocked before 48 h
+- [ ] Recovery blocked with one approval
 - [ ] Same person requesting and approving → refused
-- [ ] Recovery initiation alerts every account contact and offers a working cancel
-- [ ] Zero-knowledge restore with a wrong code → clean failure, no partial state
-- [ ] Zero-knowledge project: staff cannot produce a plaintext backup by any path
-- [ ] Zero-knowledge corbeille grace → customer-code path works, staff path absent
-- [ ] Passphrase-wrapped manual backup is never escrowed
+- [ ] Recovery initiation alerts every contact with working cancel
+- [ ] HSM re-wraps Backup Key to new device's X25519 key
+- [ ] Zero-knowledge restore with wrong code → clean failure
+- [ ] Zero-knowledge: staff cannot produce plaintext backup by any path
+- [ ] Passphrase-wrapped manual backup never escrowed
+- [ ] No password-wrapped keyring exists anywhere
+- [ ] Transfer bundle wraps to new device X25519 key
+- [ ] Local-only backup requires passphrase, never escrowed
+- [ ] App-updater key is offline, quorum-gated
+- [ ] Updater key rotation signed by both old and new keys
+- [ ] Restore re-applies erasure ledger
+- [ ] Keyring format has `keyring_key`, `blind_index_key`, `cache_key` present as `null`
+- [ ] Account password passed to a key-derivation function → build failure
+- [ ] Local-only backup wrapped with a backup passphrase opens; never escrowed
+- [ ] Solo deployment renders the one-staff assurance string, not the two-staff string
+- [ ] Escrow key rotation → an archive wrapped to the old public key still recoverable
 - [ ] Mode switch affects future backups only, and the UI says so
-- [ ] Restore re-applies the erasure ledger; erased resource stays unreadable
-- [ ] Recovery code rotation: old archives still need the old code
-- [ ] Headless project starts unattended with the service-unlock wrapper
-- [ ] Interactive project has no service-unlock wrapper
+- [ ] Recovery code rotation → old archives still need the old code

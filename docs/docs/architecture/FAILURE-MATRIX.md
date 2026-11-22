@@ -1,15 +1,10 @@
 # Failure Matrix
-
 > **Status:** Locked
-> **Last updated:** 2026-11-20
+> **Last updated:** 2026-11-22
 > What the system does when each component is unavailable. If behaviour is not in this table, it is undefined and must be added before shipping.
-
 Legend: ✅ works · ❌ refused · ⚠️ degraded / bounded · — not applicable
-
 ---
-
 ## 1. Capability matrix
-
 | Scenario | User reads | User writes | Admin reads/writes | Enrol / invite | Module install | Cloud backup | Local backup + export | Recovery |
 |---|---|---|---|---|---|---|---|---|
 | All up | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -24,11 +19,8 @@ Legend: ✅ works · ❌ refused · ⚠️ degraded / bounded · — not applica
 **The two rows people misread:**
 - *Cloud down* → the project **keeps working**, reads and writes, because membership certificates verify locally (ADR-012). Bounded by the licence grace window.
 - *Admin down* → **no writes anywhere**, by explicit product rule (ADR-009).
-
 ---
-
 ## 2. Network scenarios
-
 | Scenario | Behaviour | Governing ADR |
 |---|---|---|
 | Same LAN, no internet | mDNS + WireGuard, zero config, fully operational | 017, 018 |
@@ -40,14 +32,11 @@ Legend: ✅ works · ❌ refused · ⚠️ degraded / bounded · — not applica
 | Discovery down | Cached endpoint + LAN work; new cross-network pairs need manual endpoints | 020 |
 | No connectivity at all | Sneakernet: **read-only** snapshot export/import | 008, 024 |
 | Relay tampered with a packet | Peer rejects it; relay can only drop, never read or forge | 024 |
-
 ---
-
 ## 3. Data-loss and recovery scenarios
-
 | Scenario | Outcome | Governing ADR |
 |---|---|---|
-| Admin disk lost, backup exists, **assisted** mode | Recovery ceremony: 2FA + 48 h + alerts + two staff → Backup Key released → restore → erasure ledger re-applied | 022, 016 |
+| Admin disk lost, backup exists, **assisted** mode | Recovery ceremony: 2FA + 48 h + alerts + quorum → HSM re-wraps Backup Key to new device X25519 key → restore → erasure ledger re-applied | 022, 016 |
 | Admin disk lost, **zero-knowledge**, code kept | Customer supplies the recovery code; no staff involvement | 022 |
 | Admin disk lost, **zero-knowledge**, code lost | **Data unrecoverable.** Disclosed at enrolment and every manual backup | 022 |
 | Plan 4 manual backup, passphrase forgotten | That archive is unrecoverable; other backups unaffected | 022 |
@@ -57,11 +46,8 @@ Legend: ✅ works · ❌ refused · ⚠️ degraded / bounded · — not applica
 | Patch fails before commit | Transaction rollback; no partial state | 015 |
 | Patch fails after commit | Restore from pre-update snapshot; **never a downgrade** | 015 |
 | Snapshot transfer interrupted | User keeps its old cursor, re-requests missing chunks | 008 |
-
 ---
-
 ## 4. Licence, permission and version scenarios
-
 | Scenario | Behaviour | Governing ADR |
 |---|---|---|
 | Licence expired, ≤14 days | Grace: full operation + prominent banner | 014 |
@@ -79,11 +65,8 @@ Legend: ✅ works · ❌ refused · ⚠️ degraded / bounded · — not applica
 | Admin newer module, User older | Explicit `module_incompatible` skips; cursor advances; update prompt; partial backfill after update | 011, 012 |
 | User newer module, Admin older | Commands rejected with `ModuleVersionMismatch`; "waiting for Admin to update" | 011 |
 | Two devices both claim Admin | Only the Cloud-issued authority certificate is accepted; the other is refused by Users | 002, 010 |
-
 ---
-
 ## 5. Invariants that hold in every cell above
-
 1. A User never reports success for a write the Admin has not committed.
 2. A User never writes a business table.
 3. Export, print and local backup work in **every** billing and licence state.

@@ -1,52 +1,42 @@
 # Threat Model
-
 > **Status:** Living document — reviewed each release, audited before public launch
-> **Last updated:** 2026-11-20
+> **Last updated:** 2026-11-22
 > **Scope:** Admin app, User app, modules and module UI, Cloud public API, Owner Console, discovery, blind relay, backup and recovery, the mesh
-
 ---
-
 ## 1. Assets, in priority order
-
 | # | Asset | Where | Impact if compromised |
 |---|---|---|---|
 | 1 | Project business data (medical, lab) | Admin `project.db` | Regulatory breach, patient harm, business-ending |
 | 2 | Cloud root / licence / **patch** signing keys | HSM; patch key offline | Fleet-wide code or data execution |
-| 3 | Backup keys (Backup Key, Escrow Key) | HSM / customer recovery code | Mass decryption of historical data |
-| 4 | Device private keys (Ed25519, X25519) | OS keychain | Impersonation, module decryption |
-| 5 | Project data keys (DB, Keyring, Blind Index, Cache) | Keychain + keyring | Local data decryption |
-| 6 | Audit chain integrity | Admin + Cloud snapshots | Loss of the compliance guarantee we sell |
-| 7 | Availability of the Admin | Customer device | Whole project read-only |
-| 8 | Endpoint metadata | Discovery | Privacy loss, contact-graph inference |
-
+| 3 | **App-updater signing key** | **Offline / cold** | **Code execution on every Admin PC** — worse blast radius than a bad patch key |
+| 4 | Backup keys (Backup Key, Escrow Key) | HSM / customer recovery code | Mass decryption of historical data |
+| 5 | Device private keys (Ed25519, X25519) | OS keychain | Impersonation, module decryption |
+| 6 | Project data keys (DB, Keyring, Blind Index, Cache) | Keychain + keyring | Local data decryption |
+| 7 | Audit chain integrity | Admin + Cloud snapshots | Loss of the compliance guarantee we sell |
+| 8 | Availability of the Admin | Customer device | Whole project read-only |
+| 9 | Endpoint metadata | Discovery | Privacy loss, contact-graph inference |
 ---
-
 ## 2. Trust boundaries
-
-```
+```text
 [ Customer machine ]─────────────── mesh (E2E) ───────────────[ Customer machine ]
-   Admin: trusted for its own project                          User: untrusted writer
-   Modules + module UI: UNTRUSTED even though we signed them
-        │
-        │ HTTPS (control plane only)
-        ▼
+Admin: trusted for its own project                          User: untrusted writer
+Modules + module UI: UNTRUSTED even though we signed them
+│
+│ HTTPS (control plane only)
+▼
 [ Cloud public API ]  untrusted to the product; holds no business data
-        │
-        │ ops VPN only, never routed publicly
-        ▼
-[ Owner Console + signing service ]  highest privilege; two-person, audited
-        │
+│
+│ ops VPN only, never routed publicly
+▼
+[ Owner Console + signing service ]  highest privilege; quorum, audited
+│
 [ Blind relay ]  untrusted forwarder; ciphertext only, no keys
 ```
-
 Two boundaries people get wrong:
 - **The Admin trusts no module.** Signing proves origin, not safety (Principle 7).
 - **The Cloud is not trusted by the product to be online.** Certificates verify locally (ADR-012).
-
 ---
-
 ## 3. Adversaries and mitigations
-
 ### A1 — Malicious or patched client (customer-side)
 **Goal:** run unpaid modules, exceed plan limits, forge entitlements.
 **Mitigations:** entitlements are what the Cloud will **sign** (ADR-014); bundles encrypted to the device's X25519 key (ADR-007); load-time re-verification; server-side re-validation of every request (Principle 7); no `if plan == X` capability branches.
@@ -60,7 +50,7 @@ Two boundaries people get wrong:
 ### A3 — Account takeover + social engineering of support
 **Goal:** trigger a recovery and obtain the plaintext of a project.
 **This is the shortest real attack path in the whole system.**
-**Mitigations:** mandatory second factor on every account (ADR-010); recovery requires second-factor re-auth, a **48-hour wait**, **out-of-band alerts to every contact with a cancel link**, **two-staff approval**, and a full audit trail; **security questions are never accepted**; break-glass is time-boxed and loud (ADR-013, ADR-022).
+**Mitigations:** mandatory second factor on every account (ADR-010); recovery requires second-factor re-auth, a **48-hour wait**, **out-of-band alerts to every contact with a cancel link**, **quorum approval**  (default 2, solo mode 1 with delay), and a full audit trail; **security questions are never accepted**; break-glass is time-boxed and loud (ADR-013, ADR-022).
 **Residual:** a patient, well-resourced attacker who controls the account's email and phone for 48 hours could succeed in assisted mode. Customers who cannot accept that choose **zero-knowledge mode**, where no staff path exists.
 
 ### A4 — Compromised Cloud public API
@@ -70,85 +60,82 @@ Two boundaries people get wrong:
 
 ### A5 — Compromised module-signing key
 **Goal:** distribute a malicious module fleet-wide.
-**Mitigations:** key separation (root vs signing service vs licence vs patch); signing-service certificates rotate every 90 days and are revocable; two-person publish approval; ring rollouts; module sandbox limits what a malicious module can reach anyway.
+**Mitigations:** key separation (root vs signing service vs licence vs patch); signing-service certificates rotate every 90 days and are revocable; quorum publish approval; ring rollouts; module sandbox limits what a malicious module can reach anyway.
 **Residual:** a window before detection. Rings and the kill-switch bound it.
 
 ### A6 — Compromised patch-signing key
-**Goal:** mutate every customer's data at once. **The largest blast radius we have.**
-**Mitigations:** key held **offline/cold**, ceremony with two staff and both signatures; typed operations only; target allow-list limited to the module's own tables; `events`, `audit_entries`, `command_log` and other platform tables structurally unreachable; row caps; mandatory dry run; rings 5 → 25 → 100 with automatic gates; **pre-signed kill-switch**; post-commit restore (ADR-015).
+**Goal:** mutate every customer's data at once. 
+**Mitigations:** key held **offline/cold**, ceremony with quorum approval and both signatures; typed operations only; target allow-list limited to the module's own tables; `events`, `audit_entries`, `command_log` and other platform tables structurally unreachable; row caps; mandatory dry run; rings 5 → 25 → 100 with automatic gates; **pre-signed kill-switch**; post-commit restore (ADR-015).
 **Residual:** a correctly-signed, allow-listed, in-cap patch can still be semantically wrong. Dry-run expectations, rings and restore are the defence, not perfection.
 
-### A7 — Malicious or buggy module / module UI
+### A7 — Compromised app-updater signing key
+**Goal:** push a malicious app update to every Admin PC.
+**Mitigations:** key held **offline / cold**; quorum approval for use (ADR-013 `approvals_required` setting); rotated by an update signed by **both** old and new keys, so clients trust the transition; listed in the key hierarchy (ADR-022) and here.
+**Residual:** if compromised, an attacker gets code execution on every Admin PC — worse blast radius than a bad patch key. This is why the key is offline, quorum-gated, and rotated carefully.
+
+### A8 — Malicious or buggy module / module UI
 **Goal:** read another module's data, exfiltrate, escape.
 **Mitigations:** WASI capability grants; `mod_<name>_*` table isolation; no raw DB handle; **structured filters, never raw SQL**; UI in an opaque-origin iframe with nonce CSP and `connect-src 'none'`; allow-listed, schema-validated bridge with per-load session tokens and `event.source` checks; CPU/memory/message limits (ADR-006, ADR-011).
 **Residual:** host API bugs. Fuzzing and review are mandatory line items.
 
-### A8 — Network attacker (MITM, replay, malicious relay)
+### A9 — Network attacker (MITM, replay, malicious relay)
 **Goal:** read or alter sync traffic; impersonate the Admin.
 **Mitigations:** WireGuard E2E with peer authentication by public key; certificates verified in both directions; timestamps ±60 s and 5-minute nonce cache on discovery; Admin device signatures on batches and snapshots; relay holds no keys.
 **Residual:** traffic analysis (sizes, timing) and denial of service by dropping packets.
 
-### A9 — Curious or compromised platform insider
+### A10 — Curious or compromised platform insider
 **Goal:** read customer data or metadata without cause.
-**Mitigations:** no business data in the Cloud; metadata-only Console; **staff reads are audited and visible to the customer**; hardware-key staff auth; two-person for publish/patch/escrow; customer-consented, scoped diagnostics only (ADR-013).
-**Residual:** assisted-mode escrow release is possible with two colluding staff after 48 h — but it alerts the customer and is permanently recorded. Zero-knowledge removes the path entirely.
+**Mitigations:** no business data in the Cloud; metadata-only Console; **staff reads are audited and visible to the customer**; hardware-key staff auth; quorum for publish/patch/escrow; customer-consented, scoped diagnostics only (ADR-013).
+**Residual:** assisted-mode escrow release is possible with quorum approval after 48 h — but it alerts the customer and is permanently recorded. Zero-knowledge removes the path entirely.
 
-### A10 — Supply chain (crates, npm, build)
+### A11 — Supply chain (crates, npm, build)
 **Goal:** inject code into a shipped binary or the Cloud.
 **Mitigations:** locked dependencies, `cargo deny`, review of new deps, pinned toolchains verified at Phase 0, reproducible builds where feasible, signed releases, three-repo separation so a product-repo compromise cannot reach Cloud secrets (ADR-001).
 **Residual:** a compromised upstream crate with wide adoption. Mitigated by pinning and review, not eliminated.
 
-### A11 — Resource exhaustion / DoS
+### A12 — Resource exhaustion / DoS
 **Goal:** hang the Admin, flood discovery, exhaust relay bandwidth.
 **Mitigations:** the limits table in Principle 13 and SYNC-PROTOCOL §13; discovery rate limits per device and per pair; relay session tokens, metering and expiry; module CPU/memory caps.
 **Residual:** volumetric network DoS against the Cloud. Standard infrastructure mitigation, not application logic.
 
-### A12 — Data loss (disk failure, ransomware, accidental deletion)
+### A13 — Data loss (disk failure, ransomware, accidental deletion)
 **Goal:** none — this is the availability threat.
 **Mitigations:** per-plan encrypted backups; pre-migration and pre-patch snapshots; corbeille with a defined quota; 30-day support-assisted recovery from pre-deletion backups; erasure ledger re-applied on restore; headless Admin option (ADR-005, ADR-008, ADR-015, ADR-016, ADR-022).
 **Residual:** Plan 1 has no Cloud backup by design; local backup is the customer's routine. Zero-knowledge with a lost code is unrecoverable — disclosed repeatedly.
 
-### A13 — Clock tampering
+### A14 — Clock tampering
 **Goal:** extend a licence or module binding indefinitely.
-**Mitigations:** monotonic anchor + `last_seen_cloud_time`; `trusted_now = max(...)`; rollback detected and ignored; anchor tamper → grace then read-only (ADR-014).
+**Mitigations:** monotonic anchor + `last_seen_cloud_time`; `trusted_now = max(...)`; rollback detected and ignored; anchor tamper → grace then read-only (ADR-014). **The anchor lives in device-level `admin_state.db`, not `project.db`**, so a backup restore cannot roll it back.
 **Residual:** bounded — the Cloud will not sign past expiry regardless of the local clock.
 
-### A14 — Erasure vs immutable history
+### A15 — Erasure vs immutable history
 **Goal (regulatory, not adversarial):** honour an erasure request without breaking the audit chain.
-**Mitigations:** crypto-shredding of per-resource keys; blind-index deletion; permanent metadata-only `erasure_ledger`; **ledger re-applied on every restore**; disclosed residual backup window (ADR-016).
+**Mitigations:** crypto-shredding of per-resource keys; blind-index deletion; permanent metadata-only `erasure_ledger`; **ledger re-applied on every restore**; projection-cache snapshots deleted on erasure; disclosed residual backup window (ADR-016).
 **Residual:** ciphertext persists in old backups until retention removes it, and the ledger guarantees it stays unreadable. We state this rather than claiming instant global erasure.
-
 ---
-
 ## 4. Explicit non-goals
-
 - Absolute DRM against a device owner with full control.
 - Protection against a compromised OS kernel or hypervisor on the customer machine.
 - Hiding contact intent from our own discovery service.
 - Defending a customer who disables their OS disk encryption and shares their account password.
 
 Stating non-goals is part of the model. A threat model that claims everything protects nothing.
-
 ---
-
 ## 5. Security testing programme
-
 | Activity | When | Owner |
 |---|---|---|
 | Dependency audit (`cargo deny`, npm audit) | Every CI run | product / cloud |
 | Architecture lint suite (Principles enforcement) | Every CI run | all |
-| Fuzzing: frame parser, patch compiler, bridge dispatcher, manifest parser | Nightly | core |
+| Fuzzing: frame parser, patch compiler, bridge dispatcher, manifest parser, module migration parser, RowOp validator | Nightly | core |
 | Chaos: kill mid-write, mid-patch, mid-snapshot; disk full; partition | Weekly | core |
 | Recovery abuse-case drill (takeover + social engineering) | Before launch, then quarterly | security |
 | External penetration test | Before public launch, then annually | contracted |
 | Owner audit-chain review | Weekly | owner |
 | Access review (staff, ops VPN, HSM) | Quarterly | ops |
-
 ---
-
 ## 6. Open items
-
 - Full STRIDE decomposition per public endpoint.
 - Formal review of the patch compiler's allow-list (highest-value target).
 - Relay abuse and metering policy under sustained attack.
 - Written incident-response runbook with customer-notification timelines.
+- App-updater key rotation drill (verify dual-signature transition works end-to-end).

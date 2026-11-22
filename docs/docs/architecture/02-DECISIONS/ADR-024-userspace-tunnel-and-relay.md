@@ -46,7 +46,7 @@ Consequences: identical behaviour on Windows, macOS and Linux; a standard-user i
 3. Discovery returns a rendezvous_id
 4. Both devices short-poll GET /v1/discovery/punch/{rendezvous_id}
    until both are registered and discovery answers with the same
-   {peer_public_ip, peer_public_port, punch_at}
+   {peer_public_ip, peer_udp_port, punch_at}
 5. Both devices send WireGuard handshake packets simultaneously
 6. NAT mappings now exist in both directions → tunnel establishes
 ```

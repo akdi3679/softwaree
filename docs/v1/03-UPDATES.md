@@ -1,4 +1,12 @@
+
+03-UPDATES.md
 # v1 Update System
+
+**Status:** Locked
+**Amended:** review pass 2 — Rule 3 uses restricted mode (not refuse-to-start),
+`test_results` → `mod_food_lab_results`, wiring point 3 names the typed-op
+compiler, Rule 2 adds `recompute_derived` for verdict fixes, patches route
+through `apply_event`.
 
 The Cloud authors changes. The client applies them. **The client is always
 the writer.** This is ADR-002 applied to updates.
@@ -22,7 +30,10 @@ the writer.** This is ADR-002 applied to updates.
 2. Verify signature
 3. Take a pre-change snapshot
 4. Acquire the project lock (no new commands, drain in-flight work)
-5. Apply in a single transaction
+5. Apply in a single transaction — the compiler emits **row operations**, the
+   host wraps them as `patch.applied` events and executes them through
+   `apply_event`. There is no second table mutator (Principle 4, ADR-015 §3.3),
+   and patches are therefore replayable by `rebuild_projection`.
 6. Verify post-state
 7. Write the audit entry
 8. Release the lock
@@ -48,32 +59,39 @@ The transaction gives you atomicity **up to commit**. After commit:
 Fixing `compute_verdict` changes **future** results. It must not silently
 rewrite history:
 
-- `test_results.limit_snapshot` and `verdict` are frozen at test time.
+- `mod_food_lab_results.limit_snapshot` and `verdict` are frozen at test time.
   They are the legal record of what was reported.
 - A logic fix ships with a `rule_version` bump.
 - To correct an existing result, emit a **`correction`** event producing a
-  new `test_results` row with `correction_of` pointing at the original.
+  new `mod_food_lab_results` row with `correction_of` pointing at the original.
   The original is never updated.
 - To correct an issued report, emit a **`supersede`** event producing a
   new report with `supersedes` pointing at the old one, and set the old
-  report's status to `superseded`. The old PDF is retained.
+  report's status to `superseded`. The old PDF (stored as BLOB in the DB)
+  is retained.
 - A data patch may recompute verdicts **only** for rows that were never
-  included in a signed report, and it must record before/after counts and
-  the `rule_version` change in the audit entry.
+  included in a signed report (checked via `mod_food_lab_results.is_in_signed_report = 0`),
+  using the **`recompute_derived`** typed operation (big-doc ADR-015):
+  the host calls the module's signed pure function (e.g., `compute_verdict`)
+  on each eligible row, records before/after counts and the `rule_version`
+  change in the audit entry.
 
 This is required for ISO 17025. A lab cannot rewrite a report a client
 already holds.
 
-## Rule 3 — critical updates need a kill-switch
+## Rule 3 — critical updates need a kill-switch and use restricted mode
 
-Principle §10 lets a critical update refuse app startup past a deadline.
-That power can brick every customer with one bad release. So:
+Principle §10 lets a critical update put the app in **restricted mode**
+past a deadline. This is softer than the old "refuses to start" rule and
+preserves Principle 14 (data is never held hostage).
 
 - Every critical update ships with a signed **withdraw/halt** artifact
   referencing its id.
 - The app checks for withdrawal before enforcing a deadline.
-- A withdrawn critical update never blocks startup, and the withdrawal
+- A withdrawn critical update never blocks anything, and the withdrawal
   is audited.
+- **Restricted mode:** business writes refused, while read, export, print
+  and local backup remain available. The UI shows a prominent banner.
 
 ## Adding and removing features
 
@@ -85,7 +103,7 @@ That power can brick every customer with one bad release. So:
 | New network method (mesh)   | Code update, additive layer        | No            |
 | New module                  | Code update + signed bundle        | No (new file) |
 | Change ICMSF logic          | Code update + `rule_version` bump  | No            |
-| Correct existing verdicts   | Correction events / data patch     | Corrective    |
+| Correct existing verdicts   | Correction events / `recompute_derived` patch | Corrective |
 | Add a field                 | Expand migration                   | Additive      |
 
 Network methods are additive because the command layer never knows *how*
@@ -97,6 +115,7 @@ not a room.
 
 - Silently rewrite client files
 - Push unbounded or unversioned SQL
+- Push raw SQL — **only typed operations** from the allow-list
 - Drop tables in the field
 - Read outside the project
 - Bypass signature verification
@@ -105,18 +124,29 @@ not a room.
 Data patches are signed, versioned, dry-run first, transaction-wrapped,
 and audited with row counts. Non-critical patches are inspectable and
 refusable by the customer; refusal is audited. Critical patches are
-deadline-enforced and withdrawable.
+deadline-enforced (restricted mode) and withdrawable.
 
 ## The five wiring points (must exist in v1, with tests)
 
-1. `tauri-plugin-updater` with signed bundles
-2. Migration runner with pre-migration snapshot + rollback
-3. Signed data-patch runner: versioned, transactional, audited, dry-run
-   mode. Ships with zero patches.
-4. `invoke('rebuild_projection')` — replays `events` through `apply_event`
+1. **App updater:** `tauri-plugin-updater` with signed bundles. The updater
+   signing key is offline and quorum-gated (big-doc ADR-022, THREAT-MODEL §A7).
+2. **Migration runner** with pre-migration snapshot + rollback.
+3. **Typed-op compiler:** signed data-patch runner that accepts only typed
+   operations (`set_field`, `backfill_field`, `normalize_enum`, `soft_delete_rows`, `reindex`, `recompute_derived`; `rename_field` is not allowed), compiles them to
+   parameterized SQL locally, **refuses any op touching protected tables**
+   (`events`, `audit_entries`, `command_log`, `outbox`, `resource_keys`,
+   `blind_indexes`, `erasure_ledger`, `membership_certs`, `license_state`,
+   `mesh_peers`, `user_projections`, `schema_version`, or any table outside
+   the module's own `mod_<id>_*` prefix), enforces row caps (**10,000/op,
+   100,000/patch**), compares the dry run against the patch's declared
+   `expected_dry_run` and aborts on mismatch, and is transactional and audited.
+   Kill-switch artifacts are signed with the **offline Patch Signing Key**,
+   never the App-Updater key. Ships with zero patches.
+4. **`invoke('rebuild_projection')`** — replays `events` through `apply_event`
    into a scratch database. Ships with the rebuild-and-diff test.
-5. `invoke('restore_from_backup', { blob_id })` — works on a fresh,
-   empty database. Ships with a test that restores and verifies the chain.
+5. **`invoke('restore_from_backup', { blob_id })`** — works on a fresh,
+   empty database, re-applies the erasure ledger before writable. Ships
+   with a test that restores and verifies the chain.
 
 ## After every update
 

@@ -1,30 +1,25 @@
 # ADR-021: Plan Tiers
 
-**Status:** Accepted
+**Status:** Accepted — amended 2026-11-20 (review pass 2)
 **Date:** 2026-11-20
+**Amended:** Added Plan 1+ (Solo Cloud) as a seed row; clarified Plan 1 is not offered in v1-foodlab.
 **Deciders:** Architecture team
-**See also:** ADR-014 (licensing + entitlements — the enforcement mechanism), ADR-013 (plan CRUD), ADR-016 (quotas + retention), ADR-005 (storage), ADR-023 (bootstrap)
-
-> This ADR is the architecture-level definition of the tiers. ADR-014 defines **how** entitlements are enforced. Where any task list, phase doc or older prose disagrees with these two ADRs, the ADRs win until superseded.
+**See also:** ADR-014 (licensing), ADR-013 (approvals), ADR-016 (quotas), ADR-005 (storage)
 
 ---
 
 ## Context
 
-The overview described four plans as a prose table. Two problems followed:
-
-1. Adding or changing a plan required a code change, which contradicts the owner's goal of creating plans and projects themselves.
-2. The numbers drifted between documents (manual backup totals, audit retention, "unlimited" users), because prose is not a schema.
+Plans must be rows in the Cloud database, not branches in code. This ADR fixes the v1 seed data and the meaning of each limit.
 
 ## Decision
 
-**Plans are rows in the Cloud database, not branches in code.** This ADR fixes the v1 seed data and the meaning of each limit. ADR-014 fixes the enforcement rule: *a capability exists only if the Cloud will sign something that grants it.*
+**Plans are rows in the Cloud database.** Entitlements are enforced by **what the Cloud will sign** (ADR-014).
 
 ### The plan record
-
-```
 plans {
   id, name, version, state: active | retired,
+  offered_in_milestone: [ milestone_id ],
   limits: {
     admin_devices, projects,
     users_licensed, users_tested_ceiling,
@@ -37,29 +32,37 @@ plans {
     audit_snapshot_retention_days
   },
   module_entitlements: [ "standard-set" | module_id | "custom" ],
-  price: { currency, amount, interval }
+  price: { currency, amount, interval },
+  licence_shape: perpetual | renewable_30d
 }
-```
 
-### v1 seed data
+offered_in_milestone is how "Plan 1 exists but is not sold in v1-foodlab" is expressed as data. Enabling it later is a Console action, not a release. state: retired never changes an existing customer's entitlements until renewal.
+standard-set = the two architecture-v1 modules, medical-reception and food-lab. No plan entitles a customer to publish modules; publishing is always ours, via the private channel (ADR-013).
+v1 seed data (5 plans)
 
-| Limit | Plan 1 — Local | Plan 2 — Starter | Plan 3 — Team | Plan 4 — Enterprise |
-|---|---|---|---|---|
-| Admin devices | 1 | 1 | 1 | 1 |
-| Projects | 1 | 1 | 1 | multiple |
-| Users (licensed) | 0 | 3 | 10 | unlimited |
-| Users (tested ceiling) | 0 | 3 | 10 | **200 concurrent per Admin** |
-| Cloud backup | none | daily | daily | daily + manual |
-| Backup window (Admin picks) | — | 00:00–06:00 local | 00:00–06:00 local | 00:00–06:00 local |
-| Backup quota | — | 50 GB | 500 GB | 5 TB |
-| Daily / manual split | — | 50 GB daily | 500 GB daily | **4.9 TB daily + 100 GB manual** |
-| Manual backups | — | — | — | 10 / month, ≤10 GB each, ≤100 GB total |
-| Corbeille quota | local only | 5 GB | 50 GB | 500 GB |
-| Audit snapshot retention | local only | 1 year | 5 years | forever |
-| Module entitlements | standard-set | standard-set | standard-set | standard-set + custom |
-| Licence shape | **perpetual local** | 30-day, renewable | 30-day, renewable | 30-day, renewable |
+| Limit | Plan 1 (Local) | **Plan 1+ (Solo Cloud)** | Plan 2 (Starter) | Plan 3 (Team) | Plan 4 (Enterprise) |
+|---|---|---|---|---|---|
+| Admin devices | 1 | 1 | 1 | 1 | 1 |
+| Projects | 1 | 1 | 1 | 1 | multiple |
+| Users (licensed) | 0 | **0** | 3 | 10 | unlimited |
+| Users (tested ceiling)| 0 | 0 | 3 | 10 | 200 concurrent |
+| Cloud backup | none | **daily** | daily | daily | daily + manual |
+| Backup quota | — | **10 GB** | 50 GB | 500 GB | 5 TB |
+| Corbeille quota | local only | **5 GB** | 5 GB | 50 GB | 500 GB |
+| Audit snapshot retention| local only | **1 year** | 1 year | 5 years | forever |
+| Backup window (Admin picks) | — | 00:00–06:00 local | 00:00–06:00 local | 00:00–06:00 local | 00:00–06:00 local |
+| Daily / manual split | — | 10 GB daily | 50 GB daily | 500 GB daily | 4.9 TB daily + 100 GB manual |
+| Manual backups | — | — | — | — | 10/month, ≤10 GB each, ≤100 GB total |
+| Module entitlements | standard-set | standard-set | standard-set | standard-set | standard-set + custom |
+| Custom modules | ✗ | ✗ | ✗ | ✗ | ✓ |
+| Licence shape | perpetual | 30-day renewable | 30-day renewable | 30-day renewable | 30-day renewable |
+| Price | one-time paid (when offered) | 149 TND / month | TBD | TBD | TBD |
+| Offered in v1-foodlab | ✗ | ✓ | ✗ | ✗ | ✗ |
 
-`standard-set` = the two v1 modules, `medical-reception` and `food-lab`. No plan entitles a customer to publish modules; publishing is always ours, via the private channel (ADR-013).
+### v1-foodlab scope restriction
+
+**Plan 1 (Local) is NOT offered in the v1-foodlab milestone.**
+The v1 acceptance tests (specifically Test #8: "laptop died" recovery) depend entirely on cloud backup and escrow. Offering a plan with no backup undermines the core product promise and creates catastrophic data-loss risk for food labs. v1-foodlab launches with **Plan 1+ (Solo Cloud) only**. Plan 1 may be introduced in later milestones as a one-time paid tier with explicit "no backup" warnings.
 
 ---
 
@@ -67,38 +70,20 @@ plans {
 
 | Limit | Measured on | Enforcement point |
 |---|---|---|
-| `admin_devices` | Cloud device registry, state ACTIVE | Cloud refuses to activate a second Admin (Principle 2) |
-| `projects` | Cloud project registry | Cloud refuses to sign a licence for an over-limit project |
-| `users_licensed` | Cloud membership records | Cloud refuses to issue membership certificates past the limit |
-| `users_tested_ceiling` | **not a licence limit** — an engineering statement | Load-test evidence required to raise it; never a marketing number |
-| `backup_quota_bytes` | Cloud object storage per project | Cloud refuses the upload; the Admin is warned first. **Local backup is never blocked.** |
-| `manual_backup_*` | Cloud, per calendar month | Cloud refuses to sign a manual-backup slot |
-| `corbeille_quota_bytes` | **serialized byte size of the Admin's local `tombstones` table** | Admin, locally (ADR-016). Cloud holds metadata only. |
-| `audit_snapshot_retention_days` | **Cloud-held audit snapshot availability** | Cloud lifecycle policy. **The Admin's local hash chain is never deleted** (Principle 11). |
-| `module_entitlements` | Cloud module registry | Cloud refuses to sign a bundle (ADR-007) |
-
-Two rows in that table are the ones that used to contradict other documents, and they are now unambiguous: **corbeille quota is local tombstone bytes**, and **audit retention is Cloud snapshot availability, not deletion of the chain.**
-
----
-
-## Tier semantics
-
-**Plan 1 — Local.** One Admin, one project, zero Users, no Cloud backup, no discovery obligation. Holds a **perpetual local licence** (`license_expiry = null`), so it never expires and never needs the Cloud after activation (ADR-014, ADR-023). It is a real product, not a crippled trial: the standard modules run fully, local backup and export always work. It is the tier for a single-machine office or an air-gapped site.
-
-**Plan 2 — Starter.** One Admin plus up to 3 Users. Daily encrypted Cloud backup inside the Admin-chosen window. One year of Cloud audit snapshots.
-
-**Plan 3 — Team.** One Admin plus up to 10 Users. Larger backup and corbeille quotas, five years of Cloud audit snapshots. This is also the **trial** feature set (14 days, ADR-014).
-
-**Plan 4 — Enterprise.** Multiple projects on one Admin, unlimited licensed Users with a stated engineering ceiling, manual backups with a passphrase option (never escrowed, ADR-022), custom modules signed per project, unlimited Cloud audit snapshot retention.
-
----
-
-## Changing plans
-
-- **Upgrade:** the Cloud re-signs the licence, re-issues module bundles where entitlements grew, and re-issues membership certificates where the user limit grew. Nothing is deleted.
-- **Downgrade:** over-limit Users become read-only members chosen by the Admin; over-limit projects become read-only and exportable; a no-longer-entitled custom module is disabled but its tables are retained and exportable. **No deletion, ever** (ADR-014, Principle 14).
-- **Retiring a plan** in the Console never changes an existing customer's entitlements until their renewal.
-- **Editing a plan** is a two-person, audited owner action (ADR-013). Plans are versioned; a customer's licence names the plan version it was signed under.
+| `admin_devices` | Cloud device registry | Cloud refuses to activate a second Admin |
+| `projects` | Cloud project registry | Cloud refuses to sign a licence for over-limit |
+| `users_licensed` | Cloud membership records | Cloud refuses to issue membership certificates |
+| `backup_quota_bytes` | Cloud object storage | Cloud refuses upload; Admin warned. Local backup never blocked. |
+| `corbeille_quota_bytes` | **Serialized byte size of Admin's local `tombstones`** | Admin, locally (ADR-016). |
+| audit_snapshot_retention| Cloud-held audit snapshot availability | Cloud lifecycle policy. Admin's local chain never deleted. |
+| users_tested_ceiling | not a licence limit — an engineering statement | Load-test evidence required to raise it; never a marketing number |
+| manual_backup_* | Cloud, per calendar month | Cloud refuses to sign a manual-backup slot |
+| module_entitlements | Cloud module registry | Cloud refuses to sign a bundle (ADR-007) |
+Changing plans
+Upgrade: the Cloud re-signs the licence, re-issues bindings where entitlements grew, and re-issues membership certificates where the user limit grew. Module sections are untouched (ADR-007). Nothing is deleted.
+Downgrade: over-limit Users become read-only members chosen by the Admin; over-limit projects become read-only and exportable; a no-longer-entitled custom module is disabled but its tables are retained and exportable. No deletion, ever (ADR-014 §2.3, Principle 14).
+Retiring a plan never changes an existing customer's entitlements until renewal.
+Editing a plan is a quorum-approved, audited owner action (ADR-013). Plans are versioned; a licence names the plan version it was signed under.
 
 ---
 
@@ -106,47 +91,26 @@ Two rows in that table are the ones that used to contradict other documents, and
 
 ### Positive
 - The owner adds a plan without a release.
-- Every number in the table has a unit and an enforcement point, so docs and code can be reconciled.
-- "Unlimited" is honest: unlimited **licensed**, with a tested ceiling stated separately.
-- Plan 1 works forever offline, which makes the local-first claim true rather than conditional.
+- "Unlimited" is honest: unlimited *licensed*, with a tested ceiling stated separately.
+- Plan 1+ provides the necessary backup infrastructure for v1 acceptance tests to pass.
 
 ### Negative
-- Plan changes require re-signing licences, bundles and certificates. Accepted — infrequent.
-- Two user numbers (licensed vs tested) must be explained in sales material, or the ceiling will be mistaken for a limit.
-
-### Neutral
-- The seed table above is data. Changing it is a Console action plus an ADR note, not a refactor.
-- Per-project overrides are possible in Plan 4 by signing a licence with custom limits; the plan row is the default, not a cage.
-
----
-
-## Alternatives Considered
-
-**Hardcoded tiers in the client.** Rejected: the owner cannot add plans, and a patched client bypasses the check.
-
-**Per-seat pricing only.** Rejected: our cost driver is backup storage and support, not seats; the tiers reflect that.
-
-**"Unlimited users" with no ceiling stated.** Rejected: one laptop cannot serve an unbounded number of concurrent sync clients. State the tested number.
-
-**Audit retention meaning "delete the chain after N years".** Rejected: it destroys the tamper-evidence regulated customers are buying (ADR-016).
-
-**Plan 1 requiring periodic Cloud contact.** Rejected: it would make the air-gapped tier unusable and contradict Principle 14.
+- Five plans instead of four. Accepted.
 
 ---
 
 ## Enforcement
 
-- The plan seed lives in a Cloud migration; the Console is the only writer, with two-person approval.
-- Lint: no client code branches on a plan id or name for a capability decision (ADR-014).
-- Every limit in the table has exactly one enforcement implementation, named in the table above.
-- CI test: the numbers rendered in the UI come from the plan record, not from a constant in the app.
+- The plan seed lives in a Cloud migration; the Owner Console is the only writer, with quorum approval (ADR-013).
+- Lint: no client code branches on a plan id or name for a capability decision.
+- CI test: UI numbers come from the plan record, not constants.
 
 ### Tests
-- [ ] New plan created in the Console → assignable with no code change
-- [ ] Plan 1 offline for 90 days → fully operational
-- [ ] Plan 2 with 4 active Users → Cloud refuses the 4th membership certificate
-- [ ] Plan 4 manual backup #11 in a month → refused; local backup still works
-- [ ] Plan 4 daily quota reached → upload refused with warning; local backup unaffected
-- [ ] Downgrade Plan 4 → Plan 3 with 12 Users → 10 active, 2 read-only, zero deletions
-- [ ] Corbeille quota figure in the UI equals serialized tombstone bytes
-- [ ] Cloud audit snapshot expires at the plan window; local chain intact
+- [ ] New plan created in Console → assignable with no code change
+- [ ] Plan 1+ offline for 14 days → fully operational (grace period)
+- [ ] Plan 1+ with 1 User → Cloud refuses the membership certificate
+- [ ] Corbeille quota figure in UI equals serialized tombstone bytes
+Plan 1 not selectable in v1-foodlab; enabling offered_in_milestone makes it selectable with no code change
+Plan 4 manual backup #11 in a month → refused; local backup still works
+Downgrade Plan 4 → Plan 3 with 12 Users → 10 active, 2 read-only, zero deletions
+Cloud audit snapshot expires at the plan window; local chain intact

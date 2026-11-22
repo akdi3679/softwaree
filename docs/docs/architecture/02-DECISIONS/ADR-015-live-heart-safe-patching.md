@@ -1,165 +1,159 @@
-# ADR-015: The Live Heart — Safe Patching
+# ADR-015: Live Heart — Safe Patching for Data and Logic
 
-**Status:** Accepted
-**Date:** 2026-11-20
-**Deciders:** Architecture team
-**See also:** Principle 10, ADR-005 (snapshots), ADR-007 (module bundles), ADR-011 (module lifecycle), ADR-013 (approvals), ADR-016 (data lifecycle)
-
----
+Status: Accepted — amended 2026-11-22 (review pass 3: signing ceremony, row caps, key mapping, rename_field removed, manifest frozen_when rule)
+Date: 2026-11-20
+Deciders: Architecture team
+See also: ADR-005 (storage), ADR-006 (runtime), ADR-010 (updates), Principle 10
 
 ## Context
 
-Principle 10 lets the Cloud change logic, schema and **data** on every customer device. The owner's words: *"we may change logic or core systeme of users and can run specific sql — this is the live heart of the app."*
-
-That is the platform's largest blast radius. One compromised signing key, or one bad patch, would reach every clinic and every lab simultaneously. Raw SQL shipped to every device is an arbitrary-code-execution channel aimed at regulated data.
-
-The owner's intent is preserved. The mechanism is constrained.
+The Cloud must be able to push updates to all Admin devices: app updates, core updates, module updates, schema migrations, data patches, and logic changes. These updates must be signed, versioned, atomic, reversible, and safe.
 
 ## Decision
 
-### 1. Typed operations, never raw SQL
+### 1. The update pipeline
 
-A data patch is a list of **allow-listed operations**, compiled to SQL locally by the Admin:
+Every update follows this pipeline:
+1. Discover (Cloud advertises new version)
+2. Download (Admin fetches signed artifact)
+3. Verify signature (Admin checks Cloud signature)
+4. Snapshot (Admin takes pre-update snapshot of project.db)
+5. Acquire lock (no new commands, drain outbox)
+6. Dry run (if applicable, simulate the update)
+7. Apply (in a single transaction, via apply_event — see §3.3)
+8. Verify post-state (run acceptance tests)
+9. Commit (or rollback if any step fails)
+10. Release lock
+11. Broadcast affected events to Users (if state-affecting)
 
-| Op | Meaning |
-|---|---|
-| `set_field` | Set a column to a literal or a derived expression from a fixed expression set |
-| `backfill_field` | Populate a column where it is NULL, from a declared source |
-| `normalize_enum` | Map old enum values to new ones via an explicit mapping table |
-| `rename_field` | Column rename with type preserved |
-| `soft_delete_rows` | Move matching rows to `tombstones` (never a hard delete) |
-| `reindex` | Rebuild a declared index or blind index |
+### 2. Key-to-update-type mapping
 
-- **Target allow-list:** `mod_<module>_*` tables of the patch's declared target module. Nothing else.
-- **Structurally forbidden targets:** `events`, `audit_entries`, `command_log`, `resource_keys`, `erasure_ledger`, `membership_certs`, `license_state`, `mesh_peers`, `user_projections`, `schema_version`, and any other module's tables. Enforced by the compiler, not by review.
-- No `DROP`, no `TRUNCATE`, no arbitrary `WHERE` expressions, no subqueries, no user-supplied SQL strings.
-- The compiler is a pure function from typed ops → parameterised SQL. It is fuzzed.
+Each update type is signed by a specific key. The mapping is fixed:
 
-### 2. Caps and dry run
+- App update (binary): Signed by App-Updater Signing Key (Offline / cold, quorum-gated).
+- Data patch (typed ops): Signed by Patch Signing Key (Offline / cold, quorum-gated).
+- Module (logic + UI): Signed by Module keys (root + licence + bind) per ADR-007.
+- Schema migration (DDL): Signed by App-Updater Signing Key (shipped with app).
+- Core update (host API): Signed by App-Updater Signing Key.
 
-- Default caps: **10,000 rows per op**, **100,000 rows per patch**. Exceeding a cap aborts before commit; raising it requires re-issuing the patch with two-person approval.
-- Every patch runs a **dry run** first: it reports affected row counts and a before/after sample hash. If the dry run disagrees with the patch's declared expectation, the patch aborts and reports to the Cloud.
-- The customer-facing preview is a **human-readable diff summary** ("Set `visit.status` from `open` to `closed` on 412 visits older than 2026-01-01"), not raw SQL.
+Platform schema changes arrive as part of app updates (signed by the updater key). Module schema changes arrive in the module bundle (signed per ADR-007). There is no separate "schema signing key".
 
-### 3. Patch envelope
+### 3. Data patches: typed operations, never raw SQL
 
-```json
+The owner wants to "run specific SQL" on all Admin devices. We honor this intent as typed, allow-listed operations compiled to SQL locally by the Admin. Never raw SQL from the Cloud.
+
+Allowed operations:
+- set_field (table, field, value, where)
+- backfill_field (table, field, source_field)
+- normalize_enum (table, field, mapping)
+- soft_delete_rows (table, where)
+- reindex (table)
+- recompute_derived (module_id, function, where, frozen_when)
+
+rename_field is NOT an allowed operation. Renaming a column breaks the expand/contract rule. Instead, implement rename as:
+1. backfill_field to copy old column to new column.
+2. Code update to read from new column.
+3. Later app update to drop old column (in a subsequent major version).
+
+The typed-op compiler enforces a row cap (default 10,000 rows per op; configurable per patch). Exceeding the cap fails the dry run.
+
+recompute_derived operation:
+- Calls a signed pure function exported by the module (e.g., compute_verdict).
+- Only runs on rows never included in a signed report, checked via mod_food_lab_results.is_in_signed_report = 0 (set by apply_event from the report's frozen included_results — there is no FK). Rows inside a signed report are corrected by new rows, never recomputed (ADR-016 §6).
+- Records before/after counts and the rule_version change in the audit entry.
+
+3.1 Caps, dry-run expectations, and the patch envelope
+Default caps: 10,000 rows per op, 100,000 rows per patch. Exceeding a cap aborts before commit. Raising it requires re-issuing the patch with quorum approval.
+Every patch declares expected_dry_run. If the dry run disagrees, the patch aborts and reports to the Cloud.
+No arbitrary WHERE expressions, no subqueries, no user-supplied SQL strings. Filter is a typed enum.
 {
   "patch_id": "patch_...",
   "patch_version": 3,
-  "target_module": "medical-reception",
+  "target_module": "food-lab",
   "target_schema_range": [4, 6],
   "ops": [ { "op": "normalize_enum", "...": "..." } ],
   "row_cap": 10000,
   "expected_dry_run": { "affected_rows": 412, "sample_hash": "..." },
   "criticality": "critical",
   "deadline": "2026-12-01T00:00:00Z",
-  "ring": "5%",
+  "rule_version_from": 1,
+  "rule_version_to": 2,
   "kill_switch": { "instruction": "halt_and_restore", "signature": "..." },
   "patch_signature": "..."
 }
-```
 
-### 4. Separate offline signing key, two-person ceremony
+Rollout state is not in the envelope (§5), so advancing a ring never requires re-signing.
+3.2 Separate offline patch-signing key
+The Patch Signing Key is separate from the Cloud root, the signing-service key, the per-project licence key, the auth service, and the App-Updater Signing Key. Compromise of any of those does not enable patching.
+Held offline / cold. Signing happens in a recorded ceremony: quorum approval (ADR-013), hardware keys, signatures over the patch hash, ceremony log retained.
+The public patch key is embedded in the app alongside the Cloud root. Patches never verify against a runtime-fetched key.
+The pre-signed kill-switch is produced in the same ceremony, with the same patch key, so ops can halt without a new ceremony.
+3.3 Patches go through apply_event
+The compiler produces row operations, not executed SQL. The host wraps them as patch.applied events and executes them through the single apply_event function (Principle 4). There is no second table mutator, and patches are therefore replayable by rebuild_projection.
+### 4. Critical updates: restricted mode, not refuse-to-start
+Critical updates (security patches, data corruption fixes) have a deadline. If the deadline passes unapplied, the app enters restricted mode:
+- Business writes are refused.
+- Reading, exporting, printing, and local backup remain available.
 
-- The **patch-signing key is separate** from the module-signing key, the licence key, and the auth service. Compromise of any of those does not enable patching.
-- It is held **offline** (cold). Signing happens in a recorded ceremony: two staff, both hardware keys, both signatures over the patch hash, ceremony log retained.
-- The public patch key is embedded in the app alongside the Cloud root; patches verify against it, never against a runtime-fetched key.
+Kill-switch:
+- Every critical update ships with a signed withdraw/halt artifact referencing its id.
+- The kill-switch is PRE-SIGNED at the patch-signing ceremony, not signed later. This guarantees it exists even if the signing key is later compromised or unavailable.
+- The app checks for withdrawal before enforcing a deadline.
 
-### 5. Ring rollout
+### 5. Ring rollouts (blast radius control)
 
-```
-ring 1:  5% of projects  → health gate
-ring 2: 25% of projects  → health gate
-ring 3: 100%
-```
+Updates are rolled out in rings (5% -> 25% -> 100%). Rollout state lives on the Cloud side, not in the signed envelope.
+Rollout state on Cloud side → no re-signing needed to advance rings
+Row cap exceeded → abort before commit, no partial state
+Dry run disagrees with expected_dry_run → abort, report to Cloud
+Invalid patch signature → refuse; runtime-fetched key never trusted
+Kill-switch signed by the updater key instead of the patch key → refused
+Patch row ops executed outside apply_event → lint failure
+recompute_derived on a row with is_in_signed_report = 1 → refused
+Patch applied → rebuild_projection reproduces the post-patch state
 
-Health gates: patch failure rate, dry-run mismatch rate, post-apply verification failures, app crash rate. Any gate breach **halts the rollout automatically** and alerts ops. Ring assignment is deterministic per project id so results are reproducible.
+### 6. Signing ceremony
 
-### 6. Signed kill-switch
+Every patch and app update is produced by a signing ceremony:
+1. The patch or update is authored and reviewed in a PR.
+2. The PR is approved by the required reviewers.
+3. A ceremony is scheduled with the required quorum of approvers (per ADR-013).
+4. Each approver authenticates with their hardware key.
+5. Each approver reviews the patch contents and the dry-run output.
+6. Each approver signs the artifact with the offline signing key.
+7. The signed artifact is uploaded to the Cloud's update registry.
+8. The kill-switch artifact is pre-signed in the same ceremony.
+9. The ceremony is recorded in the platform audit chain (ADR-013).
 
-Every critical patch ships with a **pre-signed kill-switch instruction** (`halt_and_restore`), produced in the same ceremony. Ops can trigger it without a new signing ceremony — that is the point of pre-signing. On receipt, the Admin halts the rollout and restores the pre-update snapshot.
+### 7. Non-critical updates: inspectable and refusable
 
-### 7. Deadlines and refusal
-
-- **Critical** patches carry a deadline. If the deadline passes unapplied, the app enters **restricted mode**: read + export + print + local backup remain available; business writes are refused until the patch is applied.
-  - This is a deliberate refinement of Principle 10's "refuses to start": a security deadline must never make the customer's data unreachable (Principle 14).
-- **Non-critical** patches queue for 24 h. The customer may inspect the diff summary and refuse; refusal is audited and reported to the Cloud.
-
-### 8. Atomicity, and the restore rule
-
-```
-1. Verify patch signature (offline patch key) + kill-switch signature
-2. Verify target module, schema range, ring assignment
-3. Acquire project lock (no new commands, drain outbox)
-4. Take a pre-update snapshot into snapshots/recovery/ (ADR-005)
-5. Dry run → compare to expected_dry_run
-6. BEGIN; apply ops via the compiler; write audit entry with row counts; COMMIT
-7. Post-apply verification
-8. Release lock; broadcast affected events to Users
-```
-
-- **Pre-commit failure → rollback.** The transaction guarantees it.
-- **Post-commit failure → restore from the pre-update snapshot.** Never a downgrade of schema or code.
-- Schema migration precedes the logic-module swap; the previous module version is retained for restore (ADR-011).
-- There is no half-updated state.
-
----
+Non-critical updates are queued for 24 hours. The customer may inspect a human-readable diff summary and refuse (refusal is audited), or apply immediately.
 
 ## Consequences
 
-### Positive
-- The owner keeps the live heart: logic and data can change on every device.
-- One stolen key cannot patch the fleet; one bad patch cannot reach the fleet.
-- The immutable log and audit chain are structurally out of reach of patching.
-- Customers can see what a patch will do before it runs.
+Positive:
+- Updates are atomic, verified, and reversible.
+- Data patches are safe: typed operations, protected tables, mandatory dry run, row caps.
+- Critical updates have a pre-signed kill-switch and restricted mode.
+- Ring rollouts bound blast radius.
 
-### Negative
-- Expressiveness is limited. A genuinely novel data transformation needs a new typed op — which means a code review, which is the intended friction.
-- Ceremonies and rings slow urgent releases. The kill-switch and pre-signing exist to make the fast path safe rather than to skip safety.
-- The compiler is a security-critical component and must be fuzzed and audited.
-
-### Neutral
-- Typed ops are versioned; adding an op is a normal release, not a patch.
-- Dry-run expectations make patches self-checking, at the cost of authoring discipline.
-
----
-
-## Alternatives Considered
-
-**Raw SQL from the Cloud.** Maximum flexibility. Rejected: it is remote code execution against medical data, with no allow-list, no caps and no meaningful review.
-
-**Same key for modules and patches.** Rejected: one compromise would give both distribution and fleet-wide data mutation.
-
-**Online patch key for speed.** Rejected: an internet-reachable patch key is the single highest-value target we would own.
-
-**Big-bang rollout.** Rejected: no blast-radius containment.
-
-**Kill-switch signed at incident time.** Rejected: during an incident is exactly when a ceremony is slowest and most error-prone.
-
-**Refuse to start after a deadline.** Rejected as written: it holds data hostage. Restricted mode achieves the security goal without trapping the customer.
-
----
+Negative:
+- rename_field requires two app releases. Accepted: expand/contract is worth it.
+- Signing ceremonies require coordination. Accepted: quorum approval is the point.
 
 ## Enforcement
 
-- The compiler is the only producer of patch SQL. Lint: no `execute` of a string that arrived over the network.
-- Target allow-list and forbidden-table list are constants in the compiler, covered by tests, changed only by ADR.
-- CI rejects a critical patch without a pre-signed kill-switch.
-- Two-person ceremony enforced in code (`approver != requester`), recorded in the owner audit chain (ADR-013).
-- Ring gates are automatic; a human may halt but may not skip a gate.
-- Every patch writes an audit entry with op list, row counts, dry-run result and outcome.
+- The patch compiler is the only path that executes data patches.
+- Lint: rename_field is not in the allow-list.
+- Row cap is enforced in the compiler; exceeding it fails the dry run.
+- Kill-switch artifacts are signed with the offline Patch Signing Key, in the same ceremony as the patch — never with the App-Updater Signing Key, a module key, or a licence key (ADR-022). One key, one purpose.
+Row caps and expected_dry_run are enforced by the compiler, not by review.
+The compiler emits row operations; only apply_event executes them. Lint: no patch path calls execute directly.
+Quorum ceremony enforced in code and recorded in the owner audit chain (ADR-013).
 
-### Tests
-- [ ] Patch targeting `events` / `audit_entries` / `command_log` → compiler refuses
-- [ ] Patch targeting another module's tables → refuses
-- [ ] Raw SQL string in an op payload → schema rejection
-- [ ] Row cap exceeded → abort before commit, no partial state
-- [ ] Dry-run mismatch → abort, report to Cloud
-- [ ] Invalid patch signature → refuse
-- [ ] Kill-switch triggered mid-rollout → halt + restore to pre-update snapshot
-- [ ] Kill mid-patch at every step → state is always pre- or post-update, never half
-- [ ] Ring gate breach → automatic halt + alert
-- [ ] Critical deadline passed → restricted mode; export still works
-- [ ] Non-critical refused by customer → audited, not applied
-- [ ] Post-commit verification failure → restore, never downgrade
+Tests:
+- [ ] Patch with raw SQL -> rejected by compiler
+- [ ] Patch with rename_field -> rejected
+- [ ] Patch exceeding row cap -> rejected at dry run
+- [ ] Kill-switch pre-signed at ceremony (exists before patch is shipped)
+- [ ] recompute_derived only runs on rows satisfying frozen_when rule

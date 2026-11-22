@@ -112,7 +112,9 @@ Snapshots are also used for **grant backfill** (`scope: "partial"`) when a membe
 
 ## Enforcement
 
-- `events.sequence` is `INTEGER PRIMARY KEY` within the project file. Allocation is atomic inside the write transaction; a service-level invariant plus a trigger prevents gaps.
+- `events.sequence` is `INTEGER PRIMARY KEY` within the project file — **not AUTOINCREMENT**. SQLite's AUTOINCREMENT can consume values on a failed insert, which would leave gaps and break the "every sequence in a covered range is accounted for" invariant.
+- Allocation is `SELECT COALESCE(MAX(sequence), 0) + 1` executed **inside `BEGIN IMMEDIATE`**. There is exactly one writer per project (ADR-002), so this is race-free and genuinely gapless. A trigger cannot provide this guarantee; the single-writer lock does.
+- CI asserts gaplessness after a crash-injection suite: `MAX(sequence) == COUNT(*)` for committed rows.
 - `user_projections` holds `last_applied_sequence`, `permission_version` and `module_versions` per member.
 - Delivery re-checks authorization against the live `roles` / `role_permissions` / `member_roles` tables — never a snapshot taken at event creation.
 - Every batch declares its range; every non-delivered sequence in that range has a recorded reason.

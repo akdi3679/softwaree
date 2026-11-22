@@ -1,114 +1,156 @@
 # ADR-007: Triple-Signed Modules (Manifest Signatures + Encrypted Content)
 
-**Status:** Accepted — amended 2026-11-20
+**Status:** Accepted — amended 2026-11-20 (review pass 2)
 **Date:** 2026-07-26
-**Amended:** 2026-11-20 — signatures on the manifest only, encrypted module content, certificate chain to an embedded root, explicit licence expiry, `device_bind` defined exactly once
+**Amended:** manifest split into module + binding sections; signing hierarchy
+clarified; field names unified; missing manifest fields added
 **Deciders:** Architecture team
-**See also:** ADR-006 (runtime), ADR-011 (bundle + UI contract), ADR-012 (permissions), ADR-014 (licensing), ADR-022 (key custody), ADR-023 (offline bootstrap)
+**See also:** ADR-006 (runtime + contract), ADR-011 (bundle + UI),
+ADR-012 (permissions), ADR-014 (licensing), ADR-022 (keys)
 
 ---
 
 ## Context
 
-Modules (medical-reception, food-lab, future verticals) are downloaded by the Admin, then distributed to User devices. They handle regulated data (medical records, lab results). We must prevent:
+Modules are downloaded by the Admin, then distributed to User devices.
+They handle regulated data. We must prevent:
 
-- A module from being copied to a different project
-- A module from being copied to a different device (Admin or User)
-- A module from being modified after signing
-- A module from being installed on a plan that does not allow it
-- A module from being installed on a project that is not active
-- A module from running forever after a licence ends
-
-The user said: *"modules should have relation with cloud, project, admin and user if there and the plan and the billing and authentication — never depasse them all required."*
-
-This is the payment gate. It must be enforceable by cryptography, not by an `if` statement in the client.
-
----
+- Copying a module to a different project or device
+- Modifying a module after signing
+- Installing a module on a plan that does not allow it
+- Installing a module on a non-active project
+- Running a module forever after a licence ends
 
 ## Decision
 
-**Every module bundle carries three signatures on its manifest, and its logic is encrypted to the target device.**
+**Every module bundle carries three signatures on its manifest, and its
+logic is encrypted to the target device.**
 
-Five rules:
+The manifest is split into **two sections** with different signing
+frequencies. This is the critical design decision:
 
-1. **Only the manifest is signed.** The manifest contains the hash of the module binary and the hashes of every UI asset. Signing the binary separately three times is redundant — one signature over a hash is exactly as strong as a signature over the bytes, and it is cheaper and simpler.
-2. **The logic is encrypted, not just signed.** `binary.wasm` is encrypted with a random per-bundle **Content Key**. That Content Key is wrapped to the target device's **X25519 public key** and stored in the manifest (`content_key_slot`). A copied file is useless on another machine *even if a patched client skips every signature check*.
-3. **The trust anchor is embedded in the app.** The Cloud root public key ships inside the signed app binary. The per-project licence key is verified through a **certificate chain** that terminates at that embedded root. A bare public key fetched from the Cloud at runtime is **not** a trust anchor and must never be treated as one.
-4. **Every binding expires.** `license_expiry` is part of the signed material. "Revoke by not renewing" only works if there is an expiry to reach.
-5. **`device_bind` is a signature, never a MAC.** Defined once, below. No shared secret between Cloud and device exists.
+### The module section (signed ONCE at publish)
+
+The module section is **identical for every device**. It is signed by
+`cloud_root` once, during the quorum publish ceremony (ADR-013).
+Renewal does NOT re-sign it.
+
+```json
+{
+  "module_id": "food-lab",
+  "module_version": "1.0.0",
+  "api_version": 1,
+  "required_core_min": "1.0.0",
+  "binary_sha256": "<SHA-256 of plaintext binary.wasm>",
+  "ui_sha256": {
+    "ui/index.html": "<SHA-256>",
+    "ui/module.js": "<SHA-256>",
+    "ui/module.css": "<SHA-256>"
+  },
+"migrations_sha256": { "migrations/001.sql": "<SHA-256>" },
+  "tables": ["mod_food_lab_settings", "..."],
+  "commands": [
+    { "name": "create_sample",
+      "permission": "food-lab.sample.create",
+      "writes": ["mod_food_lab_samples"],
+      "events": ["sample.created"],
+      "offline_policy": "ADMIN_REQUIRED" }
+  ],
+  "queries": [
+    { "name": "list_samples", "reads": ["mod_food_lab_samples"] }
+  ],
+  "pages": ["Samples", "SampleForm", "SampleDetail", "Standards",
+            "Categories", "Companies", "Reports"],
+  "capabilities": {
+    "filesystem": "none", "network": "none", "clock": true,
+    "cpu_ms": 5000, "memory_mb": 64,
+    "max_instances": 4, "max_payload_bytes": 1048576
+  },
+  "sensitive_resources": ["sample", "result", "report"],
+  "rule_version": 1
+}
+```
+
+### The binding section (signed per device, per licence renewal)
+
+The binding section is **unique to each device**. It is signed by the
+`project_license` key and the `device_bind` signature. Renewal re-signs
+only this section — no re-encryption, no re-publish.
+
+```json
+{
+  "project_id": "proj_a1b2c3",
+  "license_id": "lic_...",
+  "license_expiry": "2026-12-20T00:00:00Z",
+  "device_pubkey": "<this device's Ed25519 public key>",
+  "content_key_slot": "<Content Key wrapped to this device's X25519 key>",
+  "ciphertext_sha256": "<SHA-256 of binary.wasm.enc as delivered>",
+  "issued_at": "2026-11-20T00:00:00Z"
+}
+```
 
 ### Bundle layout
 
 ```
 bundle/
-├── manifest.json                  ← plaintext, canonicalised with JCS (RFC 8785)
-├── manifest.sig.cloud_root        ← Ed25519, Cloud root key (HSM)
-├── manifest.sig.project_license   ← Ed25519, per-project licence key
-├── manifest.sig.device_bind       ← Ed25519, Cloud signing service
-├── cert_chain.pem                 ← project licence cert → intermediate → Cloud root
+├── manifest.json                  ← contains both sections, canonicalised with JCS
+├── manifest.sig.cloud_root        ← Ed25519 over module_hash (ONCE at publish)
+├── manifest.sig.project_license   ← Ed25519 over bundle_hash (per device)
+├── manifest.sig.device_bind       ← Ed25519, Cloud signing service (per device)
+├── cert_chain.pem                 ← project licence cert → Cloud root
 ├── binary.wasm.enc                ← AES-256-GCM encrypted module logic
+├── migrations/                    ← NNN.sql files, hashed in manifest
+│   └── 001.sql
 └── ui/                            ← signed static UI assets (ADR-011)
     ├── index.html
     ├── module.js
     └── module.css
 ```
 
-### Manifest fields
-
-| Field | Meaning |
-|---|---|
-| `module_id` | Stable module identifier, e.g. `medical-reception` |
-| `module_version` | Semver of this module build |
-| `api_version` | Host API version this module was compiled against (ADR-011) |
-| `required_core_min` | Minimum Admin/User core version |
-| `binary_sha256` | SHA-256 of the **plaintext** `.wasm` (identical across devices) |
-| `ciphertext_sha256` | SHA-256 of `binary.wasm.enc` **as delivered to this device** |
-| `ui_sha256` | Map of `ui/<path>` → SHA-256 of that asset |
-| `content_key_slot` | Content Key wrapped to this device's X25519 public key |
-| `device_pubkey` | The target device's Ed25519 public key (base32) |
-| `project_id` | The project this bundle is licensed to |
-| `license_id` | Cloud licence record this bundle was issued under |
-| `license_expiry` | RFC 3339 timestamp. `null` only for a Plan 1 perpetual local licence |
-| `issued_at` | RFC 3339 timestamp of issuance |
-| `capabilities` | WASI grants + host functions this module may import |
-| `tables` | Table prefixes this module owns (`mod_<name>_*`) |
-
-**Bundle hash (the thing all three signatures sign):**
+### The three hashes and three signatures
 
 ```
-bundle_hash = SHA-256( "platform.bundle.v1" || JCS(manifest without the signatures field) )
+All hashes are SHA-256. In every concatenation and every JSON tuple a hash is
+**lowercase 64-character hex** — fixed length, so concatenation is unambiguous
+(same rule as the audit chain, Principle 11). Variable-length concatenation
+without a fixed-length or length-prefixed encoding is forbidden.
+
+module_hash = SHA-256( "platform.module.v1" || JCS(module_section) )
+bundle_hash = SHA-256( "platform.bundle.v1" || hex(module_hash) || JCS(binding_section) )
+
+cloud_root      = Ed25519_Sign( CloudRootKey,      module_hash )   // 32 raw bytes
+project_license = Ed25519_Sign( ProjectLicenceKey, bundle_hash )   // 32 raw bytes
+device_bind     = Ed25519_Sign( CloudSigningKey,
+                    "platform.bind.v1" || JCS({
+                      bundle_hash,          // lowercase hex
+                      device_pubkey, project_id, license_expiry
+                    }))
+
+Ed25519 hashes its input internally, so signing the 32-byte digest is standard;
+the domain tag lives inside the digest pre-image.
+cloud_root is produced ONCE at publish (quorum ceremony, ADR-013).
+project_license and device_bind are produced per device, per renewal.
+
+device_bind = Sign(CloudSigningKey,
+    "platform.bind.v1" || JCS({
+      bundle_hash, device_pubkey, project_id, license_expiry
+    }))
+  → Cloud signing service signs this per device, per renewal
 ```
 
-JCS is RFC 8785 canonical JSON. The same rule and the same domain-tag style are used by the audit chain (Principle 11), so there is one canonicalisation implementation in the codebase.
+**Only the manifest is signed.** The manifest contains the binary hash
+(plaintext), the ciphertext hash, the UI hashes, and the migration
+hashes. Signing the binary separately would be redundant.
 
----
+### What each signature proves
 
-## What each signature proves
+| Signature | Signs | Frequency | Proves |
+|---|---|---|---|
+| `cloud_root` | `module_hash` | Once at publish (quorum) | "We published this module code" |
+| `project_license` | `bundle_hash` | Per device, per renewal | "This project, on this plan, may run it" |
+| `device_bind` | bind tuple | Per device, per renewal | "Bound to this specific device's key" |
 
-### 1. `cloud_root`
-
-Ed25519 signature over `bundle_hash`, made by the platform Cloud's **root signing key** (HSM in production, encrypted key file in dev).
-
-Proves:
-- "This module was published by us, the platform vendor."
-- "The manifest — and therefore the binary hash and every UI hash — has not been modified since we signed it."
-
-Verified with the root public key **embedded in the app binary**.
-
-### 2. `project_license`
-
-Ed25519 signature over `bundle_hash`, made by the **per-project licence key**. The Cloud generates that key when a project licenses a module. Its certificate is included in `cert_chain.pem` and chains to the embedded Cloud root.
-
-Proves:
-- "This specific project is allowed to use this module."
-- "The project's plan allows this module."
-- "The project was ACTIVE and in good standing at issuance."
-
-The certificate carries its own validity window and is checked against the monotonic clock anchor (ADR-014).
-
-### 3. `device_bind`
-
-**One definition, used everywhere in this document set:**
+### device_bind definition (one place, used everywhere)
 
 ```
 device_bind = Ed25519_Sign(
@@ -122,140 +164,175 @@ device_bind = Ed25519_Sign(
 )
 ```
 
-At issuance the device proves ownership of its identity by signing a Cloud challenge with its Ed25519 private key. The Cloud then signs the tuple above.
-
 At verification the device:
-1. Verifies the signature with the Cloud public key (embedded root, or a delegated signing certificate that chains to it).
-2. Checks that `device_pubkey` inside the signed tuple **equals its own public key**.
-3. Checks that `license_expiry` is in the future (or `null` for a Plan 1 perpetual local licence).
+1. Verifies the signature with the Cloud public key (embedded root or delegated cert).
+2. Checks `device_pubkey` in the signed tuple equals its own Ed25519 public key.
+3. Checks `license_expiry` is in the future (monotonic clock anchor, ADR-014).
 
-It is a **public-key signature**. The device needs no secret shared with the Cloud, and no private key other than its own to prove identity. There is no MAC anywhere in this design.
+It is a **signature, never a MAC**. No shared secret exists.
 
-Proves:
-- "This bundle is bound to this specific device."
-- "This device was the one the Cloud issued the licence to."
-- "This binding has a defined end date."
+### Why the split matters
+
+Without the split, `cloud_root` would sign every device's bundle. That
+means the root key (HSM, quorum ceremony) would be needed for every
+30-day licence renewal — operationally impossible.
+
+With the split:
+- **Publish** = quorum ceremony, signs module_hash once.
+- **Issue/renew** = automated Cloud process, signs binding per device.
+- Renewal re-signs only the binding section. No re-encryption needed
+  (the Content Key and ciphertext are unchanged; only `license_expiry`
+  and `issued_at` change in the binding).
+
+---
+
+## Migrations in the bundle
+
+Each bundle carries a `migrations/` directory containing forward-only
+`.sql` files (`001.sql`, `002.sql`, ...). The directory is hashed in
+`manifest.migrations_sha256`.
+
+At install time, the host:
+1. Takes a pre-migration snapshot (ADR-005).
+2. Verifies every statement touches only `mod_<module_id>_*` tables.
+3. Runs the migrations inside the install transaction.
+4. Records the applied version in `schema_version(scope='module', version=N)`.
+
+This is how a new module creates its tables — the answer to "owner
+creates new modules" (ADR-006).
+
+For v1, the food-lab migrations are embedded in the app binary and split
+into `platform/` and `food_lab/` directories. In Phase 6 they move into
+the bundle.
 
 ---
 
 ## Verification flow
 
-### At install time (Admin or User receives a bundle)
+### At install time
 
 ```
-1. Parse manifest.json; recompute bundle_hash from JCS(manifest minus signatures)
-   Mismatch → REJECT
-2. Verify cloud_root signature over bundle_hash with the EMBEDDED Cloud root key
-   Fail → REJECT, log security event, notify Cloud
-3. Verify cert_chain.pem terminates at the embedded Cloud root
-   Verify the project licence certificate is within its validity window
-   Fail → REJECT, log
-4. Verify project_license signature over bundle_hash with the certified project key
-   Fail → REJECT, log
-5. Verify device_bind signature over the bind tuple
-   Check signed device_pubkey == this device's own public key
-   Check license_expiry is in the future (monotonic clock anchor, ADR-014)
-   Fail → REJECT, log
-6. Compute SHA-256 of binary.wasm.enc; compare to manifest.ciphertext_sha256
-   Fail → REJECT
-7. Unwrap content_key_slot with this device's X25519 private key; decrypt binary
-   Compute SHA-256 of the plaintext; compare to manifest.binary_sha256
-   Fail → REJECT
-8. Verify every ui/ asset hash against manifest.ui_sha256
-   Fail → REJECT
-9. Check manifest.api_version is supported by this host (ADR-011)
-   Unsupported → do not install; show a clear "module needs a newer app" message
-10. Store bundle under projects/{id}/modules/{module}-{version}/
-11. Register in module_registry with all verification timestamps
+1. Parse manifest.json; compute module_hash and bundle_hash
+2. Verify cloud_root signature over module_hash
+   (embedded Cloud root key)
+3. Verify cert_chain.pem terminates at embedded root;
+   verify project licence cert is within its validity window
+4. Verify project_license signature over bundle_hash
+5. Verify device_bind signature; check device_pubkey == own key;
+   check license_expiry is future
+6. Compute SHA-256 of binary.wasm.enc → compare ciphertext_sha256
+7. Unwrap content_key_slot with X25519 private key → decrypt binary
+8. Compute SHA-256 of plaintext → compare binary_sha256
+9. Verify every ui/ asset hash → compare ui_sha256
+10. Verify migrations/ hash → compare migrations_sha256
+11. Check api_version is supported by this host
+12. Run migrations inside install transaction (after snapshot)
+13. Store bundle; register in module_registry
 ```
 
 ### At load time (every Wasmtime instantiation)
 
 ```
-1. Re-verify all three signatures (microseconds)
-2. Re-check certificate validity and license_expiry against the clock anchor
+1. Re-verify all three signatures
+2. Re-check cert validity and license_expiry (monotonic anchor)
 3. Re-check module_registry: still licensed to this project?
-4. Re-check device state: is this still the active Admin (or an active member)?
-5. Re-check the member's module-access list (ADR-012)
+4. Re-check device state: still the active Admin / active member?
+5. Re-check member's module-access list (ADR-012)
 6. Re-verify binary and UI hashes
-7. All pass → instantiate with the manifest's capability grants
-   Any fail → refuse to load, log a security event, show a plain-language reason
+7. All pass → instantiate with manifest capability grants
+   Any fail → refuse, log security event, show plain-language reason
 ```
-
-Re-verification at load time is mandatory. A bundle valid at install time may have expired or been revoked since.
 
 ### User-device delivery
 
-1. Admin assigns module access to a member, or the member requests access.
-2. Cloud verifies:
-   - Account is a member of the project
-   - Project licence permits this module
-   - The member's **module-access list** includes this module. This list is synced from the Admin at assignment time. The Cloud checks this coarse entitlement only — it never holds the per-role permission list (ADR-012).
-   - Device is ACTIVE
-3. Cloud issues a bundle bound to that User device (same three signatures, content key wrapped to that device's X25519 key).
-4. User receives it via the Admin or directly from the Cloud.
-5. User runs the **full** verification flow above. It never relies on the Admin having checked.
-6. User re-verifies at every load.
+1. Admin assigns module access, or member requests it.
+2. Cloud verifies: member of project, project licence permits module,
+   member's module-access list includes it, device is ACTIVE.
+3. Cloud issues a bundle bound to that User device (same three
+   signatures, content key wrapped to that device's X25519 key).
+4. User runs the full verification flow above independently.
+5. User re-verifies at every load.
 
 The User's runtime grants are restricted:
 - Read access to its own authorised projection only
-- Submit commands to the Admin (one-round-trip path, ADR-012 / SYNC-PROTOCOL)
+- Submit commands to the Admin (one-round-trip path, ADR-012)
 - No direct database writes
 - No audit-log access
 - No module-management actions
 
 ---
 
-## Bootstrap bundles (Plan 1 and offline first run)
+## Bootstrap bundles (`bundle_kind = "bootstrap"`)
 
-Plan 1 is local-only and may be created with no internet. To avoid a chicken-and-egg problem, the app ships with the two standard modules **embedded** as **bootstrap bundles**:
+A bootstrap bundle is embedded in the installer, **before any device keypair
+exists**. It therefore cannot be pre-encrypted to a device key. Defined behaviour:
 
-- Signed by `cloud_root` only. No `project_license`, no `device_bind`.
-- Verified against the embedded root and the app's own code signature.
-- Valid for a **30-day bootstrap grace** from first launch, tracked by the monotonic clock anchor.
-- Grant the standard module set only. Never custom modules. Never User devices.
-- Every use is logged locally.
+- Ships as `module` section + `manifest.sig.cloud_root` + **plaintext**
+`binary.wasm` + `migrations/` + `ui/`. No `project_license`, no `device_bind`,
+no `cert_chain.pem`, no `content_key_slot`.
+- Trust comes from `cloud_root` over `module_hash`, plus the app's own platform
+code signature. Nothing else.
+- On first launch the app generates its keypairs, generates a local Content Key,
+**re-encrypts the wasm locally**, wraps it to its own X25519 key, and writes a
+**local, unsigned binding** with `bundle_kind="bootstrap"`, its own
+`device_pubkey`, the local `project_id`, and
+`license_expiry = first_launch + 30 days` from the monotonic anchor.
+- The local binding is bookkeeping, **not a trust claim**. It is never accepted
+for a paid module, a custom module, or a User device.
+- `module_registry`'s CHECK branches on `bundle_kind`: bootstrap requires
+`cloud_root` only; **`licensed` and `perpetual` require all three signatures.**
+A perpetual Plan 1 licence is still device-bound — treating it as signature-exempt
+would be a piracy path.
+- Standard modules only. Every use is logged locally.
+- After the window, read-only. Reading, exporting, printing and local backup
+always remain (Principle 14). One free activation replaces bootstrap bundles
+with fully bound ones (ADR-023).
 
-After the grace period, if the project has never been activated, the app becomes **read-only**. Reading and exporting existing data always remain available (Principle 14). One free online activation converts the project to a normal Plan 1 perpetual licence and issues fully bound bundles. See ADR-023.
+**Content Key reuse.** The Content Key is random per `(module_version, device)`
+and never reused across devices or module versions. It **is** reused across
+renewals of the same `(module_version, device)` — that is what makes renewal
+cheap and keeps `ciphertext_sha256` stable.
 
-This is the only exception to "three signatures, no exceptions", it is time-boxed, and it cannot be used to run a paid module.
+**v1-foodlab note:** bootstrap is **deferred** in this milestone (see
+`v1/DEVIATIONS.md`). The format is defined now so it never changes later.
+
+
+After the grace period, if the project has never been activated, the
+app becomes **read-only**. Reading and exporting always remain available
+(Principle 14). One free online activation converts the project to a
+normal licence and issues fully bound bundles (ADR-023).
 
 ---
 
 ## Consequences
 
 ### Positive
-- **Cannot copy a module to another project.** `project_license` is per-project.
-- **Cannot copy a module to another device.** `device_bind` names the device public key, and the content is encrypted to that device's X25519 key. A byte-for-byte copy fails both the signature check and decryption.
-- **Cannot modify the binary or the UI.** Hashes are inside the signed manifest.
-- **Cannot use a module the plan does not allow.** The licence signature is only issued after the plan check.
-- **Cannot use a module on a non-active project.** Licence signatures are only issued for ACTIVE projects.
-- **Cannot replay an old bundle for a new licence.** `license_id`, `module_version` and `bundle_hash` are all signed.
-- **Actually self-revoking.** Bindings expire (default 30 days). Stop renewing and the bundle becomes inert at the next load-time check.
-- **One canonicalisation, one hash rule** shared with the audit chain.
+- Cannot copy a module to another project or device.
+- Cannot modify the binary, UI, or migrations.
+- Cannot use a module the plan does not allow.
+- Cannot use a module on a non-active project.
+- Actually self-revoking via `license_expiry`.
+- Publish is a quorum ceremony; renewal is automated.
+- One canonicalisation, one hash rule shared with the audit chain.
 
 ### Negative
-- **Install requires a Cloud round trip.** Accepted — installation is rare, not per-request.
-- **Admin device replacement re-issues every bundle.** Accepted — deliberate and infrequent.
-- **User device replacement re-issues that user's bundles.** Accepted.
-- **Plan change re-issues licences.** Accepted.
-- **Key management complexity.** We must manage:
-  - Cloud root key (HSM in production)
-  - Cloud signing service key (delegated, chains to root)
-  - Per-project licence keys + certificates
-  - Device binding tuples (bundle hash + device pubkey + expiry) — **not** per-device signing keys
-  - Per-bundle Content Keys
-  All Cloud-side keys live in `platform-cloud/`. The Admin and User never see Cloud or project-licence private keys; they hold only their own device keypairs.
-- **Not absolute DRM.** See below.
+- Install requires a Cloud round trip (accepted — rare operation).
+- Admin/User device replacement re-issues bundles.
+- Plan change re-issues licences.
+- Bundle format is more complex than a single flat manifest.
 
 ### Neutral
-- Signature algorithm is Ed25519 throughout. Content encryption is AES-256-GCM. Key wrapping uses X25519 + HKDF + AES-256-GCM.
-- Verification is microseconds per signature; decryption of a typical module is single-digit milliseconds.
-- Bundles are per-device, so the Cloud stores one encrypted artifact per (module version, device). Content Keys are generated per bundle.
+- Signing is Ed25519 throughout. Content encryption is AES-256-GCM.
+  Key wrapping uses X25519 + HKDF + AES-256-GCM.
+- Bundles are per-device. Content Keys are per-bundle.
 
 ### Honest limit
 
-The client runs on the customer's machine. Signatures, encryption, sandboxing and load-time re-checks raise the bar substantially — a copied file is inert, and a patched client still cannot decrypt content it has no key for. But a determined attacker with full control of a device that legitimately holds a licence can extract what that device can read. **This is a strong licensing gate, not unbreakable DRM.** We state this plainly in the docs and never claim otherwise in marketing.
+The client runs on the customer's machine. Signatures, encryption,
+sandboxing and load-time re-checks raise the bar substantially. But a
+determined attacker with full control of a legitimately licensed device
+can extract what that device can read. **This is a strong licensing gate,
+not unbreakable DRM.** We state this plainly.
 
 ---
 
@@ -263,60 +340,67 @@ The client runs on the customer's machine. Signatures, encryption, sandboxing an
 
 | Key | Rotation | Notes |
 |---|---|---|
-| Cloud root | Annually | Old root stays embedded for one full app release cycle so existing bundles keep verifying. New root ships in an app update before it is used to sign. |
-| Cloud signing service | Every 90 days | Delegated certificate chaining to root. Compromise is contained by revoking the certificate. |
-| Per-project licence key | On plan change, suspension/resumption, or every 90 days | Certificate validity matches. |
-| Device binding | Not a key — an expiring signature (default 30 days) | Re-issued on licence refresh. Device replacement invalidates the old pubkey, so old bindings fail the pubkey check. |
-| Content Key | Per bundle | Never reused across devices or versions. |
-| Module version | New version = new manifest = new signatures | Old versions remain valid until explicitly revoked or expired. |
+| Cloud root | Annually | Old root stays embedded for one app-release overlap |
+| Cloud signing service | 90 days | Delegated cert chaining to root |
+| Per-project licence key | 90 days or on plan change | Certificate validity matches |
+| Device binding | Not a key — an expiring signature | Re-issued on licence refresh |
+| Content Key | Per bundle | Never reused across devices or versions |
+| Module version | New version = new module section = new cloud_root signature | Old versions valid until revoked or expired |
 
-Root rotation never requires re-signing every historical bundle: the overlap window plus load-time expiry checks bound the exposure.
+Root rotation never requires re-signing every historical bundle: the
+overlap window plus load-time expiry checks bound the exposure.
 
 ---
 
 ## Alternatives Considered
 
-### Cloud signature only
-**Pros:** simplest. **Cons:** modules copy freely between projects, devices and customers. **Rejected:** the user explicitly requires project + device + plan binding.
+**Cloud signature only.** Rejected: modules copy freely.
 
-### Cloud + project signatures, no device binding
-**Pros:** stops project-to-project copying. **Cons:** one licence runs on every machine the customer owns. **Rejected:** device binding is required.
+**Sign manifest AND binary separately, three times each.** Rejected:
+the manifest already contains the binary hash. Redundant.
 
-### Sign the manifest AND the binary, three times each
-**Pros:** feels thorough. **Cons:** the manifest already contains the binary hash, so the extra six signatures add zero security, double the failure modes, and complicate rotation. **Rejected as redundant.**
+**device_bind as a MAC.** Rejected: requires a shared secret; a signing
+key cannot do key derivation.
 
-### `device_bind` as a MAC over a device-derived key
-**Pros:** cheap. **Cons:** requires a shared secret between Cloud and device; a signing key cannot be used for key derivation; verification would need the very secret we are trying to protect. **Rejected:** it is a signature.
+**Fetching the project public key from Cloud at verification time.**
+Rejected: the Cloud is not a trust anchor for its own claim. Certificate
+chain to the embedded root.
 
-### Fetching the project public key from the Cloud at verification time
-**Pros:** no certificate infrastructure. **Cons:** the Cloud is not a trust anchor for its own claim — a compromised or spoofed endpoint substitutes its own key. **Rejected:** certificate chain to the embedded root.
-
-### Symmetric encryption with a single shared key
-**Pros:** fast. **Cons:** revoking one device means re-encrypting everything. **Rejected.**
-
-### TPM-only binding
-**Pros:** strongest hardware binding. **Cons:** not every customer device has a usable TPM; cross-platform support is uneven. **Rejected for v1.** Can be added as an extra factor in v2 without changing the model.
+**No module/binding split.** Rejected: root key would sign every device
+bundle, making a quorum publish ceremony impossible for renewals.
 
 ---
 
 ## Enforcement
 
-- The Cloud signing service is a separate, isolated process. Only the module registry can call it. Signing keys are never loaded into the main API process.
-- Lint rule in `platform-cloud/`: no module version can be marked `ACTIVE` without all three signatures present and valid.
-- Lint rule in `product/`: the verification function is the only path to `wasmtime::Module::new`. No bypass, including in tests and dev tools.
-- Lint rule: no code may treat a runtime-fetched public key as a trust anchor. Only the embedded root and certificates chaining to it.
-- Every verification attempt (success or failure) is written to the Admin's security log with project, module id + version, device, and result. Batched to the Cloud daily. User devices report to the Admin as part of normal audit flow.
-- The clock used for expiry checks is the monotonic anchor (ADR-014), never the raw wall clock.
+- Cloud signing service is a separate process. Only the module registry
+  can call it. Signing keys never loaded into the main API process.
+- Lint: no module version can be ACTIVE without the signatures its `bundle_kind`
+requires — three for `licensed` and `perpetual`, `cloud_root` only for `bootstrap`.
+- Lint: `cloud_root` is never invoked outside the publish ceremony. A code path
+that signs a binding with the root key fails the build.
+- Lint: no code path reaches `wasmtime::Module::new` without verification.
+- Lint: no code treats a runtime-fetched public key as a trust anchor.
+- Every verification attempt logged with project, module, device, result.
+- Clock used for expiry is the monotonic anchor (ADR-014).
 
 ### Tests
 - [ ] Tampered manifest → rejected
 - [ ] Tampered ciphertext → rejected before decryption
 - [ ] Tampered UI asset → rejected
-- [ ] Bundle copied to a second device → `device_bind` pubkey check fails AND decryption fails
-- [ ] Bundle copied to a second project → `project_license` fails
-- [ ] Certificate not chaining to the embedded root → rejected
-- [ ] Expired `license_expiry` → refused at load time
-- [ ] Clock rolled backwards → expiry still enforced via the monotonic anchor
-- [ ] Suspended project → refresh refused, bundle expires, load refused
-- [ ] Unsupported `api_version` → clean "update the app" message, never a crash
+- [ ] Tampered migration file → rejected
+- [ ] Bundle copied to second device → device_bind pubkey check fails AND decryption fails
+- [ ] Bundle copied to second project → project_license fails
+- [ ] Cert not chaining to embedded root → rejected
+- [ ] Expired license_expiry → refused at load time
+- [ ] Clock rolled back → expiry still enforced via monotonic anchor
+- [ ] Suspended project → refresh refused, bundle expires
+- [ ] Unsupported api_version → clean "update the app" message
 - [ ] Bootstrap bundle after 30 days → read-only, export still works
+- [ ] Renewal re-signs binding only; module_hash and manifest.sig.cloud_root byte-identical
+- [ ] Renewal never invokes the root key (assertion on the ceremony log)
+- [ ] Renewal reuses the Content Key; ciphertext_sha256 unchanged
+- [ ] `perpetual` bundle missing device_bind → refused
+- [ ] Bootstrap bundle carrying a project_license → rejected as malformed
+- [ ] Bootstrap plaintext wasm re-encrypted locally at first launch
+- [ ] Rebuild with a missing module_version and no upcaster → loud failure

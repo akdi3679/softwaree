@@ -63,7 +63,7 @@ The maximum frame size is 16 MB (SYNC-PROTOCOL). A larger snapshot is split into
 
 ### Wrapped resource keys
 
-Sensitive resources are encrypted per-resource (ADR-016). A snapshot that contains sensitive rows carries a `keys` section: for each such resource, the resource key **wrapped to the recipient member's X25519 key** (ADR-012 §5). The Admin never sends a resource key in plaintext.
+Sensitive resources are encrypted per-resource (ADR-016). A snapshot that contains sensitive rows carries a `keys` section: for each such resource, the resource key **wrapped to the recipient member's X25519 key** (ADR-012 §4). The Admin never sends a resource key in plaintext.
 
 ---
 

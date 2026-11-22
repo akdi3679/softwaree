@@ -1,11 +1,26 @@
+
+03-STACK.md
+
 # Stack — Tools, Versions, And Why
 
 > **Status:** Locked
-> **Last updated:** 2026-11-20
+> **Last updated:** 2026-11-22
+> **Amended:** 2026-11-22 — event envelope expanded in contracts section, 
+> IdempotencyConflict error added, module skew rule corrected to 
+> `module_refresh`, payment processing made provider-agnostic, added 
+> `zeroize`/`secrecy`/`ciborium`/`uuid` v7 crates, Phase 0 pin checklist 
+> updated, Drizzle-in-Rust explicitly rejected.
 
-Every tool here was chosen for one of: enterprise track record, self-hostability, security posture, or community size. We do not pick tools because they are trendy. We pick tools that will still be maintained in five years and have a clear upgrade path.
+Every tool on this list has been chosen for one of: enterprise track record, 
+self-hostability, security posture, or community size. We do not pick tools 
+because they are trendy. We pick tools that will still be maintained in 
+five years and have a clear upgrade path.
 
-**Version policy.** Versions below are **floors and targets, not gospel**. Every pin is verified against the project's official release page at **Phase 0** and recorded in the lockfiles. Rows marked *(pin at Phase 0)* are deliberately unpinned here rather than carrying a stale number. No performance claim appears in this document without our own measurement.
+**Version policy.** Versions below are **floors and targets, not gospel**. 
+Every pin is verified against the project's official release page at 
+**Phase 0** and recorded in the lockfiles. Rows marked *(pin at Phase 0)* 
+are deliberately unpinned here rather than carrying a stale number. No 
+performance claim appears in this document without our own measurement.
 
 ---
 
@@ -23,7 +38,7 @@ Every tool here was chosen for one of: enterprise track record, self-hostability
 | Object storage | MinIO | *(pin at Phase 0)* | S3-compatible, self-hosted, no AWS lock-in |
 | **Signing & escrow keys** | **HSM / cloud KMS** | — | Cloud root, signing-service, per-project licence keys, and the assisted-mode Escrow Key (ADR-022). Patch key stays **offline** (ADR-015). |
 | **Email delivery** | SMTP (self-hosted) or Postmark / SES | — | Invitations, recovery alerts, dunning, receipts. Recovery alerts are security-critical, not marketing mail. |
-| **Payments** | Stripe | latest API | Checkout + signature-verified, idempotent webhooks (ADR-014) |
+| **Payments** | **Provider interface** (see §A.1) | — | Stripe, Tunisian PSP, or any provider that implements the interface. Provider choice is D-3, not a stack decision. |
 | **STUN / probe** | coturn (or equivalent) | *(pin at Phase 0)* | Our own reachability servers — no third party by default (ADR-019) |
 | **Blind relay** | our packet forwarder | — | Opt-in, ciphertext only, no key material, metered per project (ADR-024) |
 | Canonical JSON (TS) | `canonicalize` (JCS, RFC 8785) | *(pin at Phase 0)* | One hash rule with the Rust side (Principle 11) |
@@ -35,19 +50,46 @@ Every tool here was chosen for one of: enterprise track record, self-hostability
 | Container | Docker | 24+ | Standard |
 | Orchestration | Docker Compose (v1) → K8s later | — | Compose now; K8s when the team passes ~3 ops people or we need multi-region |
 
+### A.1 Payment provider interface
+
+Payment is a **provider interface**, not a hard-coded dependency:
+
+~~~typescript
+interface PaymentProvider {
+  createCheckoutSession(plan: Plan, project: ProjectId): Promise<CheckoutResult>;
+  handleWebhook(payload: unknown, signature: string): Promise<WebhookResult>;
+  getSubscriptionStatus(subscriptionId: string): Promise<SubscriptionStatus>;
+  cancelSubscription(subscriptionId: string): Promise<void>;
+}
+~~~
+
+v1 implements one provider (Stripe or a Tunisian PSP — decision D-3). 
+The interface ensures the provider can be swapped without touching the 
+licensing or plan enforcement code.
+
+**Why an interface:** Stripe does not settle TND. The Tunisian PSP choice 
+(Konnect / Paymee / Flouci) depends on recurring-charge support. If the 
+chosen PSP has no recurring support, v1 uses prepaid periods + manual 
+renewal, which fits the licence TTL model with no design change.
+
 **Why Hono over Express / Fastify / Next.js**
 - ~12 kb vs Express's ~1.4 MB
 - Web Standards: works on any runtime
 - No framework lock-in — easy to swap
 - Right shape for a pure JSON API plus the occasional HTML page
-- **No benchmark claims here.** We run our own throughput tests at Phase 0 before relying on any number.
+- **No benchmark claims here.** We run our own throughput tests at Phase 0 
+  before relying on any number.
 
 **Why Drizzle over Prisma (Cloud side)**
 - No separate schema file, no codegen step
 - SQL-like query API, easier to optimize
 - Smaller footprint, fewer runtime dependencies
 
-**Why not microservices:** each service adds deployment, networking, auth, monitoring and failure modes. We start as a modular monolith with hard internal package boundaries. The **one exception is the signing service**, which is a separate process by design (Principle 13), and the **Owner Console**, which is separate for network isolation (ADR-013).
+**Why not microservices:** each service adds deployment, networking, auth, 
+monitoring and failure modes. We start as a modular monolith with hard 
+internal package boundaries. The **one exception is the signing service**, 
+which is a separate process by design (Principle 13), and the **Owner 
+Console**, which is separate for network isolation (ADR-013).
 
 ---
 
@@ -70,7 +112,7 @@ Every tool here was chosen for one of: enterprise track record, self-hostability
 | DB access (Rust) | **plain SQL** | — | **Drizzle is TypeScript-only; it does not exist for Rust.** Queries are plain SQL; types come from `specta` + contracts. |
 | Migrations (Rust) | `.sql` files + `rusqlite_migration` | *(pin at Phase 0)* | Embedded in the binary, **forward-only**, run per project on start (ADR-005) |
 | Type bridge (Rust → TS) | `specta` | 2.x | Export Rust types as TS types for `invoke()` IPC |
-| Module runtime | Wasmtime | *(pin at Phase 0)* | Bytecode Alliance, capability-based, ~5 ms cold start |
+| Module runtime | Wasmtime | *(pin at Phase 0)* | Bytecode Alliance, capability-based. Cold start: to measure at Phase 0. |
 | Module language | Rust → `wasm32-wasip2` | — | Same language as the host, no FFI quirks |
 | Module UI | static JS/CSS in a sandboxed iframe | — | Opaque origin, nonce CSP, typed `postMessage` bridge (ADR-011) |
 | **Mesh encryption** | **WireGuard in userspace** (`boringtun` or an actively maintained equivalent) + `smoltcp` | *(pin at Phase 0)* | **No driver, no adapter, no admin rights.** Works identically on Windows/macOS/Linux (ADR-024). |
@@ -78,9 +120,12 @@ Every tool here was chosen for one of: enterprise track record, self-hostability
 | STUN client | our own client → our own servers | — | Reachability self-test with an **external probe**, never self-connect (ADR-019) |
 | Crypto (Rust) | `ring` or **`aws-lc-rs`**; `argon2`; `keyring` | *(pin at Phase 0)* | Standard algorithms only. `aws-lc-rs` — not "aws-ls-crypto". |
 | Canonical JSON (Rust) | `serde_jcs` (RFC 8785) | *(pin at Phase 0)* | Audit chain + bundle hashing (Principle 11, ADR-007) |
+| CBOR (Rust) | `ciborium` | *(pin at Phase 0)* | Sync frame encoding (SYNC-PROTOCOL) |
+| UUID (Rust) | `uuid` with `v7` feature | *(pin at Phase 0)* | UUIDv7 for event_id, command_id, snapshot_id |
+| Key memory hygiene | `zeroize` + `secrecy` | *(pin at Phase 0)* | Keys zeroed on drop, never logged, never cloned |
 | **PDF generation** | `typst` or `printpdf` | *(pin at Phase 0)* | Sick-leave certificates, lab reports |
 | Auto-update | `tauri-plugin-updater` | 2.x | Built-in, signed bundles |
-| **Code signing** | Apple notarization, Windows Authenticode, Linux GPG | — | Certificates procured at Phase 0; EV recommended on Windows |
+| **Code signing** | Apple notarization, Windows Authenticode, Linux GPG | — | Certificates procured at Phase 0; EV recommended on Windows. **Lead time is weeks — buy early.** |
 | Logging (Rust) | `tracing` + `tracing-subscriber` | *(pin at Phase 0)* | Structured, OpenTelemetry-compatible |
 | Logging (TS) | `pino` | 9.x | Fast, JSON output |
 | Errors (Rust) | `thiserror` + `anyhow` | *(pin at Phase 0)* | Idiomatic error handling |
@@ -106,10 +151,18 @@ Every tool here was chosen for one of: enterprise track record, self-hostability
 - Vite is what Tauri scaffolds by default
 
 **Why plain SQL in Rust, not Drizzle**
-Drizzle is a TypeScript library. There is no Rust version, and pretending otherwise produces a stack that cannot be built. The Admin and User use `rusqlite` with embedded `.sql` migration files. Contract types are shared through the contracts package and `specta`; the SQL itself is deliberately boring and auditable. **Drizzle stays Cloud-only.**
+Drizzle is a TypeScript library. There is no Rust version, and pretending 
+otherwise produces a stack that cannot be built. The Admin and User use 
+`rusqlite` with embedded `.sql` migration files. Contract types are shared 
+through the contracts package and `specta`; the SQL itself is deliberately 
+boring and auditable. **Drizzle stays Cloud-only.**
 
 **Why userspace WireGuard, not the kernel module**
-Our customers run Windows. Kernel WireGuard there needs a driver and administrator rights, which contradicts a standard-user installer, and a system adapter would fight real LANs using `10.50.x.x`. In userspace, the addresses live inside our own stack, no OS route is touched, and one implementation covers all three platforms (ADR-024).
+Our customers run Windows. Kernel WireGuard there needs a driver and 
+administrator rights, which contradicts a standard-user installer, and a 
+system adapter would fight real LANs using `10.50.x.x`. In userspace, the 
+addresses live inside our own stack, no OS route is touched, and one 
+implementation covers all three platforms (ADR-024).
 
 ---
 
@@ -122,7 +175,8 @@ Same stack as the Admin, with a smaller surface:
 - No backup management, no role management, no audit-log UI
 - **No command queue in v1** (ADR-009)
 
-Build the Admin's UI components first; the User app composes them with fewer features.
+Build the Admin's UI components first; the User app composes them with 
+fewer features.
 
 | Layer | Tool | Version | Why this one |
 |---|---|---|---|
@@ -149,6 +203,9 @@ Build the Admin's UI components first; the User app composes them with fewer fea
 | STUN client | ours | — | Same |
 | Crypto (Rust) | `ring` / `aws-lc-rs`, `argon2`, `keyring` | *(pin at Phase 0)* | Same |
 | Canonical JSON (Rust) | `serde_jcs` | *(pin at Phase 0)* | Snapshot + frame verification |
+| CBOR (Rust) | `ciborium` | *(pin at Phase 0)* | Sync frame encoding |
+| UUID (Rust) | `uuid` with `v7` feature | *(pin at Phase 0)* | Same |
+| Key memory hygiene | `zeroize` + `secrecy` | *(pin at Phase 0)* | Same |
 | Auto-update | `tauri-plugin-updater` | 2.x | Same |
 | Code signing | Apple / Windows / Linux | — | Same |
 | Logging (Rust) | `tracing` | *(pin at Phase 0)* | Same |
@@ -165,7 +222,8 @@ Build the Admin's UI components first; the User app composes them with fewer fea
 
 ## D. Shared Contracts (`product/packages/contracts/`)
 
-A pure-TypeScript package. No runtime logic — types, Zod schemas, and generated code.
+A pure-TypeScript package. No runtime logic — types, Zod schemas, and 
+generated code.
 
 | Tool | Why |
 |---|---|
@@ -176,18 +234,20 @@ A pure-TypeScript package. No runtime logic — types, Zod schemas, and generate
 
 **Exports**
 - Branded IDs: `ProjectId`, `AccountId`, `UserId`, `DeviceId`, `CommandId`, `EventId`, `ModuleId`, `PatchId`
-- **Event envelope**: `sequence`, `resource_type`, `resource_id`, `module_id`, `actor_id`, `project_id`, `event_version`, `payload`, `idempotency_key`, optional `supersedes_event_id`
+- **Event envelope**: `sequence`, `event_id`, `event_type`, `resource_type`, `resource_id`, `module_id`, `module_version`, `actor_id`, `project_id`, `tx_id`, `event_version`, `aggregate_version`, `payload_format`, `payload`, `idempotency_key`, optional `supersedes_event_id`
 - **Frame types**: `SyncHello`, `SyncAck`, `EventBatch` (with `range_start` / `range_end`), `SnapshotPayload` (chunked), `CommandRequest`, `CommandResponse`, `Purge`, `SessionKeepalive`, `Error`
-- **Error contracts**: `ValidationError`, `AuthorizationError`, `ConflictError`, `ModuleVersionMismatch`, `AdminOffline`, `NetworkError`
+- **Error contracts**: `ValidationError`, `AuthorizationError`, `ConflictError`, `IdempotencyConflict`, `ModuleVersionMismatch`, `AdminOffline`, `NetworkError`
 - **Permission strings**: `module.resource.action`, action wildcards only
 - **Plan record** types (limits + entitlements, ADR-021)
 - **Patch op** schemas (typed operations, ADR-015)
 - **Bundle manifest** + signature + certificate-chain types (ADR-007, ADR-011)
 - **Certificate** types: membership, Admin authority (ADR-010, ADR-012)
+- **Payment provider** interface (ADR-014, §A.1 above)
 - Versioning primitives: `ProjectSequence`, `AggregateVersion`, `PermissionVersion`, `ApiVersion`, `ProjectionFormatVersion`
 - Cloud API request/response types for every endpoint in `00-OVERVIEW §2.3`
 
-The Cloud imports from this package. The Admin and User import from this package. The Cloud imports from **nowhere else** in `product/`.
+The Cloud imports from this package. The Admin and User import from this 
+package. The Cloud imports from **nowhere else** in `product/`.
 
 ---
 
@@ -212,9 +272,13 @@ The Cloud imports from this package. The Admin and User import from this package
 | Docker Compose | 24+ | Local dev + small deployments |
 | Caddy | 2.x | Reverse proxy, automatic HTTPS. Public listener never routes `/ops/*`. |
 
-**Why self-hosted everything:** minimum cost, full data control, no vendor lock-in, predictable pricing. We pay for compute, not for the privilege of running our own software.
+**Why self-hosted everything:** minimum cost, full data control, no vendor 
+lock-in, predictable pricing. We pay for compute, not for the privilege of 
+running our own software.
 
-**Why not Kubernetes yet:** for 2–3 ops people running one Cloud instance, Compose is faster, simpler and easier to debug. Migrate when the team passes ~3 ops people or we need multi-region.
+**Why not Kubernetes yet:** for 2–3 ops people running one Cloud instance, 
+Compose is faster, simpler and easier to debug. Migrate when the team 
+passes ~3 ops people or we need multi-region.
 
 ---
 
@@ -232,7 +296,8 @@ The Cloud imports from this package. The Admin and User import from this package
 | Modules (UI) | Static JS + CSS | Sandboxed, hashed, no build-time coupling to the app (ADR-011) |
 | Scripts (CI, ops) | TypeScript or Bash | Standard |
 
-**Deliberately not used:** Go (splits the team), Python (not needed in v1), Java/Kotlin (operational cost), C#/.NET (no benefit alongside Tauri).
+**Deliberately not used:** Go (splits the team), Python (not needed in v1), 
+Java/Kotlin (operational cost), C#/.NET (no benefit alongside Tauri).
 
 ---
 
@@ -252,15 +317,20 @@ The Cloud imports from this package. The Admin and User import from this package
 | Database schema (Cloud) | Forward-only migrations with compensations | Per change |
 | Database schema (Admin/User) | **Forward-only. No `down` in production.** Recovery = restore the pre-migration snapshot. | Per change |
 
-**API compatibility rule:** v1 is stable. New features go to v2. Deprecations are announced six months before removal. No silent breaking changes.
+**API compatibility rule:** v1 is stable. New features go to v2. Deprecations 
+are announced six months before removal. No silent breaking changes.
 
-**Module skew rule:** an Admin/User version mismatch is a **named, visible state** with a defined recovery (explicit `module_incompatible` skips, then a partial backfill snapshot after update) — never silent divergence (ADR-011, ADR-012).
+**Module skew rule:** an Admin/User version mismatch is a **named, visible 
+state** with a defined recovery (explicit `module_incompatible` skips, then 
+a `module_refresh` snapshot after update) — never silent divergence 
+(ADR-008, ADR-011, ADR-012).
 
 ---
 
 ## H. Cost estimate (honest, self-hosted)
 
-Assumes 1,000 active projects, ~10 devices per project ≈ 10,000 registered devices.
+Assumes 1,000 active projects, ~10 devices per project ≈ 10,000 registered 
+devices.
 
 | Item | Monthly cost | Notes |
 |---|---|---|
@@ -276,18 +346,24 @@ Assumes 1,000 active projects, ~10 devices per project ≈ 10,000 registered dev
 | STUN / probe servers | $10 | Small, shared |
 | Code-signing certificates | $30–$80 | Apple + Windows (EV) amortized monthly |
 | **Infra subtotal** | **~$230–$600 / month** | with cloud KMS |
-| Payment processing | ~2.9% + $0.30 per transaction | Revenue-dependent, varies by country — **not infra** |
+| Payment processing | varies by provider | Revenue-dependent, varies by country — **not infra** |
 | Support staff | Human cost | **The real scaling expense.** |
 
-At 10,000 projects, expect roughly **$1,000–$2,000/month** infra; storage, relay egress and support dominate. At 1,000,000 projects we would need a real K8s cluster and a CDN; per-project infra cost stays low, but support is a business, not a rounding error.
+At 10,000 projects, expect roughly **$1,000–$2,000/month** infra; storage, 
+relay egress and support dominate. At 1,000,000 projects we would need a 
+real K8s cluster and a CDN; per-project infra cost stays low, but support 
+is a business, not a rounding error.
 
-This is cheaper than per-seat SaaS at this scale. It is **not** "$150 all-in" — that figure omitted email, key custody, relay bandwidth, payment fees and support, and we do not repeat it.
+This is cheaper than per-seat SaaS at this scale. It is **not** "$150 
+all-in" — that figure omitted email, key custody, relay bandwidth, payment 
+fees and support, and we do not repeat it.
 
 ---
 
 ## I. Phase 0 pin checklist
 
-Before the first implementation session, verify each of these against its official release page and record the exact version in the lockfiles:
+Before the first implementation session, verify each of these against its 
+official release page and record the exact version in the lockfiles:
 
 - [ ] Node.js LTS, TypeScript, Hono, Zod, Drizzle + Drizzle Kit, PostgreSQL major
 - [ ] Vite, Vitest, Biome, Tailwind, TanStack Router/Query, Zustand, Radix
@@ -296,12 +372,14 @@ Before the first implementation session, verify each of these against its offici
 - [ ] **Userspace WireGuard crate** — confirm maintenance status; pick between `boringtun` and an actively maintained alternative
 - [ ] `smoltcp`, pure-Rust mDNS crate, STUN client
 - [ ] `ring` / `aws-lc-rs`, `argon2`, `keyring`, `serde_jcs`, TS `canonicalize`
+- [ ] `ciborium` (CBOR), `uuid` with v7 feature, `zeroize`, `secrecy`
 - [ ] PDF crate (`typst` or `printpdf`)
 - [ ] MinIO, Infisical, Gitea, Woodpecker, Prometheus/Grafana/Loki/Tempo, coturn, Caddy
 - [ ] KMS/HSM choice + pricing; code-signing certificates procured
-- [ ] Email provider + Stripe account + webhook signing secrets
+- [ ] Email provider + payment provider account + webhook signing secrets
 
-Any row still marked *(pin at Phase 0)* after Phase 0 is a build-blocking gap, not a documentation nicety.
+Any row still marked *(pin at Phase 0)* after Phase 0 is a build-blocking 
+gap, not a documentation nicety.
 
 ---
 
@@ -320,4 +398,5 @@ Any row still marked *(pin at Phase 0)* after Phase 0 is a build-blocking gap, n
 | **Kubernetes in v1** | Operational cost for a 2–3 person ops team. |
 | **NATS / distributed queue in v1** | The SQLite outbox is sufficient and simpler. |
 | **Keycloak / Auth0 / Clerk / WorkOS** | Device identity fits poorly; per-MAU cost; lock-in (ADR-010). |
+| **Hard-coded payment provider** | Provider choice is D-3; the interface is the contract. |
 | **Unverified benchmark claims** | "3× faster than X" without our own measurement is marketing, not architecture. |

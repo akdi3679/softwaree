@@ -92,7 +92,8 @@ The full platform table list (18 Admin / 6 User) is in ADR-012. If data exists i
 1. Customer contacts support (or uses their recovery code, in zero-knowledge mode)
 2. Cloud-mediated replacement flow (ADR-010) with the recovery ceremony (ADR-022):
    second-factor re-auth, 48-hour wait, out-of-band alerts with a cancel link,
-   two-staff approval for any escrow release
+quorum approval for any escrow release (ADR-013 approvals_required;
+solo mode = 1 hardware-key approval + 24 h delay + alert)
 3. Customer installs the Admin app on a new device
 4. THE NEW DEVICE GENERATES ITS OWN TWO KEYPAIRS (Ed25519 + X25519).
    The Cloud never issues or holds a device private key.

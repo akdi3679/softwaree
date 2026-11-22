@@ -1,7 +1,9 @@
+01-PRINCIPLES.md
+
 # Architecture Principles — 14 Non-Negotiable Rules
 
 > **Status:** Locked
-> **Last updated:** 2026-11-20
+> **Last updated:** 2026-11-22
 > **Audience:** every engineer, every AI agent, every code review
 
 These are the rules that **cannot be broken** without an ADR. They are not aspirational. They are enforced by code, lint rules, and code review.
@@ -31,7 +33,7 @@ Every piece of data has exactly one system that owns it. No dual ownership. No "
 | Project data keys (DB, keyring, blind index, cache) | Admin device keychain | never in the Cloud in usable form |
 | Resource keys + erasure ledger | Admin | never in the Cloud |
 | Soft-deleted records (corbeille) | Admin (data) + Cloud (metadata) | quota = local tombstone bytes (ADR-016) |
-| Device endpoints (metadata) | Cloud (discovery, **observed** source IP) | Devices know their own |
+| Device endpoints (metadata) | Cloud (discovery, **observed** source IP + probe-verified UDP port) | Devices know their own |
 | Sync data | Admin ↔ User (direct, punched, or relayed ciphertext) | Cloud never sees plaintext |
 
 **If you find yourself adding data to two systems and keeping them in sync, you are doing it wrong.** Pick the owner. The other holds a projection.
@@ -78,31 +80,56 @@ A business state change and the event that announces it **must be committed in t
 
 Correct (the transaction is opened by host code; `apply_event` is a **Rust function**, not SQL — SQLite has no stored procedures):
 
-```rust
+~~~rust
 // Admin host code — one transaction, one apply_event
 let tx = conn.transaction()?;
-// 1. Append the event (the state delta) — the source of truth
-tx.insert_event(&event)?;                    // INSERT INTO events (...)
-// 2. Apply it to the tables through the ONE apply_event function
-apply_event(&tx, &event)?;                   // the UPDATE happens inside, never ad-hoc
-// 3. Outbox + audit, same transaction
+
+// 1. Idempotency check (inside the transaction)
+let existing = tx.query_command_log(actor_id, idempotency_key)?;
+if let Some(row) = existing {
+    if row.request_hash != compute_hash(&command_payload) {
+        return Err(Error::IdempotencyConflict);
+    }
+    return Ok(row.result_payload);
+}
+
+// 2. Optimistic concurrency check
+check_expected_version(&tx, aggregate_id, expected_version)?;
+
+// 3. Append the event (the state delta) — the source of truth
+let sequence = tx.next_sequence()?;  // COALESCE(MAX(sequence),0)+1, gapless
+tx.insert_event(&event)?;
+
+// 4. Apply it to the tables through the ONE apply_event function
+apply_event(&tx, &event)?;  // the UPDATE happens inside, never ad-hoc
+
+// 5. Outbox + audit, same transaction
 tx.insert_outbox(event.sequence)?;
-tx.insert_audit(&audit_entry)?;              // hash-chained
+tx.insert_audit(&audit_entry)?;  // hash-chained
+
+// 6. Record the command LAST (result_payload now exists)
+tx.insert_command_log(actor_id, idempotency_key, command_type,
+                      request_hash, tx_id, result_payload)?;
+
 tx.commit()?;
 // Now and only now can we notify clients
-```
+~~~
 
 Wrong:
 
-```
+~~~
 UPDATE patients ...
 send_to_user()        -- if this fails, DB changed but clients don't know
 INSERT INTO outbox ...
-```
+~~~
 
 This is the Transactional Outbox pattern. Non-negotiable.
 
-**Event envelope (minimum):** `sequence`, `resource_type`, `resource_id`, `module_id`, `actor_id`, `project_id`, `event_version`, `payload`, `idempotency_key`. Corrections carry `supersedes_event_id`; history is never rewritten (ADR-016).
+**Event envelope (minimum):** `sequence`, `event_id`, `event_type`, `resource_type`, `resource_id`, `module_id`, `module_version`, `actor_id`, `project_id`, `tx_id`, `event_version`, `aggregate_version`, `payload_format`, `payload`, `idempotency_key`. Corrections carry `supersedes_event_id`; history is never rewritten (ADR-016).
+
+`module_version` pins replay to the module build that produced the event (ADR-006). `aggregate_version` carries optimistic concurrency. `payload_format` is `jcs-plain` or `jcs-enc-v1` (ADR-016). These exist from v1 so v1.1 needs no log migration.
+
+**Data patches obey this rule too.** The typed-op compiler produces row operations; the host wraps them as `patch.applied` events and executes them through `apply_event` (ADR-015 §3.3). There is no second table mutator, and patches are therefore replayable.
 
 ---
 
@@ -114,7 +141,7 @@ Permissions are `module.resource.action`, per resource type in v1. The decision 
 
 In particular, **event delivery re-checks authorization at delivery time**, not at event creation:
 
-```
+~~~
 for event in range(range_start, range_end):
     if (!canRead(member, event.resource, currentPermissions)):
         markSkipped(member, event.sequence, reason: "denied")
@@ -122,12 +149,13 @@ for event in range(range_start, range_end):
     if (!moduleCompatible(member, event.module_id)):
         markSkipped(member, event.sequence, reason: "module_incompatible")
         continue
-    deliver(member, event)   // includes wrapped resource key, ADR-012 §5
-```
+    deliver(member, event)   // includes wrapped resource key, ADR-012 §4
+~~~
 
 Every batch declares its range. The cursor advances to `range_end`; skipped events are recorded explicitly. **A gap inside a delivered range means "not authorized", never "lost."**
 
 Permission changes have consequences, not just flags:
+
 - **Grant** → partial backfill snapshot of the newly authorized resources (ADR-008).
 - **Revoke** → `Purge` frame; best-effort deletion of rows **and local key copies** on the User, honestly described.
 - Both bump `permission_version` and invalidate cached snapshots **before** the change is acknowledged.
@@ -138,7 +166,7 @@ Permission changes have consequences, not just flags:
 
 Every command carries an `idempotency_key` (UUIDv7 from the client). If the same command arrives twice — network retry, crash mid-process, reconnect — the system processes it exactly once.
 
-Implementation: `command_log` stores the key and its result. Before executing, look up the key. If present, return the original result without re-applying.
+Implementation: `command_log` is keyed by **`(actor_id, idempotency_key)`** and stores `request_hash` plus the result. The lookup happens **inside** the write transaction, never before it. Same key + same request → return the stored result. Same key + **different** request → **`IdempotencyConflict`**, never a silent second effect. The composite primary key is the concurrency backstop.
 
 Keys are never pruned younger than 30 days; pruning older keys is safe because no client retries that far back. This is what makes the system safe against network failure without distributed transactions.
 
@@ -162,12 +190,14 @@ A buggy or malicious client must not be able to escalate privileges by sending c
 ## 8. Modules Cannot Cross Borders
 
 A module can only:
+
 - Read its own declared tables (`mod_<name>_*`)
 - Use the official host API (commands and queries declared in its manifest)
 - Receive data through the projection layer, never raw table access
 - Render UI inside an opaque-origin iframe with the CSP and bridge defined in ADR-011
 
 A module cannot:
+
 - Touch another module's tables
 - Bypass the authorization layer
 - Read or write the audit log
@@ -184,9 +214,12 @@ Enforced by: capability-based WASI grants, SQL table-prefix isolation, the ifram
 
 The Admin encrypts each backup with a fresh **Backup Key** before it leaves the device. What the Cloud can do next depends on the project's custody mode, and we say so in plain words (ADR-022):
 
-- **Assisted recovery (default):** the Cloud stores ciphertext **and** an HSM-wrapped copy of the Backup Key. It *can* decrypt — but only through a controlled recovery: customer re-authentication, a **48-hour waiting period**, **out-of-band alerts to every account contact with a cancel link**, **two-staff approval**, and a full audit trail.
-  The claim we make: *"We cannot read your backups without a controlled, audited recovery that alerts you."*
-  The claim we never make: *"we can't read your backups."*
+- **Assisted recovery (default):** the Cloud stores ciphertext **and** an HSM-wrapped copy of the Backup Key. It *can* decrypt — but only through a controlled recovery: customer re-authentication, a **48-hour waiting period**, **out-of-band alerts to every account contact with a cancel link**, **quorum approval** (two-person default, one-person with delay for solo owners), and a full audit trail.
+
+The claim we make: *"We cannot read your backups without a controlled, audited recovery that alerts you."*
+
+The claim we never make: *"we can't read your backups."*
+
 - **Zero-knowledge mode:** the Backup Key is wrapped only to the customer's recovery code. The Cloud stores nothing usable and **cannot** decrypt. Lost code = lost data. The UI states this at enrolment and at every manual backup.
 
 **Key rules (ADR-022 is authoritative):** one key, one purpose. Random 32-byte keys. **No key is ever derived from a signing key.** The account password is never a data key. Device signing (Ed25519) and device encryption (X25519) are separate keypairs. Database, keyring, blind-index and cache keys are distinct. Backup encryption is separate from the database key.
@@ -211,8 +244,9 @@ Every update (core, app, module, **data, schema, logic**) follows one pipeline:
 8. On failure: **pre-commit → rollback; post-commit → restore from the snapshot. Never a downgrade of schema or code.**
 
 **Update types:**
+
 - **Schema migration:** forward-only DDL with backfill in the same transaction
-- **Data patch:** a **typed operation** from an allow-list (`set_field`, `backfill_field`, `normalize_enum`, `rename_field`, `soft_delete_rows`, `reindex`), compiled to SQL locally by the Admin, with target-table allow-lists, row-count caps and a mandatory dry run. **Never raw SQL from the Cloud.**
+- **Data patch:** a **typed operation** from an allow-list (`set_field`, `backfill_field`, `normalize_enum`, `soft_delete_rows`, `reindex`, `recompute_derived`), compiled to SQL locally by the Admin, with target-table allow-lists, row-count caps and a mandatory dry run. **Never raw SQL from the Cloud.**  , -- "rename_field is deliberately absent: it breaks expand/contract, so a rename is backfill_field + a code release + a later column drop."
 - **Logic module:** a signed, encrypted WASM bundle plus its signed UI (ADR-007, ADR-011)
 - **Security override:** force-revoke, force-rotate, applied to open sessions
 
@@ -220,9 +254,9 @@ Every update (core, app, module, **data, schema, logic**) follows one pipeline:
 
 The Cloud is **authoritative for updates**; the Admin is the executor. This is the "live heart" — under strict blast-radius controls (ADR-015):
 
-- A **separate, offline patch-signing key**, two-person signing ceremony
+- A **separate, offline patch-signing key**, quorum signing ceremony
 - **Ring rollouts** 5% → 25% → 100%, with automatic health gates
-- A **pre-signed kill-switch** (`halt_and_restore`) shipped with every critical patch
+- A **pre-signed kill-switch** (`halt_and_restore`) shipped with every critical patch, signed with the **patch key** (never the app-updater key)
 
 **Critical updates have a deadline.** If it passes unapplied, the app enters **restricted mode**: business writes are refused, while reading, exporting, printing and local backup remain available. A security deadline must never make the customer's data unreachable (Principle 14). *(This refines the earlier "refuses to start" wording.)*
 
@@ -238,11 +272,14 @@ Audit records are never updated or deleted in normal operation. They are hash-ch
 
 **Hash rule (one implementation, shared with bundle hashing):**
 
-```
-hash = SHA-256( "platform.audit.v1" || prev_hash || JCS(entry) )
-```
+~~~
+entry          = the audit row WITHOUT `audit_seq` and WITHOUT `hash`
+                 (audit_seq is assigned by the INSERT; hash is what we are computing)
+hash           = SHA-256( "platform.audit.v1" || prev_hash_hex || JCS(entry) )
+prev_hash_hex  = previous row's hash as lowercase 64-character hex
+~~~
 
-JCS is RFC 8785 canonical JSON.
+JCS is RFC 8785 canonical JSON. All hashes in concatenations and JSON tuples are **lowercase 64-character hex** — fixed length, so concatenation is unambiguous. Variable-length concatenation without a fixed-length or length-prefixed encoding is forbidden.
 
 **Reads of sensitive records are audited too**, not just writes — viewing a patient, opening a lab result, exporting a report. Read entries are batched per `(actor, resource_type, resource_id, action, 5-minute bucket)` with an access count. **Flush ordering is deterministic**: batched read-audit entries are written inside a normal Admin write transaction, which assigns their position in the hash chain. There is no out-of-band flush that could produce an unordered or dangling chain entry. Audit entries contain **metadata only**, never the sensitive payload; otherwise audit becomes a shadow copy of the data and erasure becomes impossible (ADR-016).
 
@@ -259,6 +296,7 @@ The corbeille lives in the Admin's `tombstones` table, quota-measured in seriali
 ## 12. The Cloud Is An External Service To The Product
 
 The product treats the Cloud as an opaque, versioned API. The product never:
+
 - Imports Cloud source code
 - Knows the Cloud's database schema
 - Assumes the Cloud is online for normal project operation
@@ -278,6 +316,7 @@ Within the Cloud, the **public channel** (`/v1/*`) and the **private channel** (
 ## 13. The App Is Hardened Against Bypass And Resource Exhaustion
 
 Client binaries (Admin, User) are compiled with:
+
 - Rust release profile: `strip = true`, `panic = "abort"`, `lto = true`, `codegen-units = 1`
 - No debug symbols in production builds
 - Platform code signing (Apple notarization, Windows Authenticode, Linux GPG)
@@ -305,9 +344,10 @@ Client binaries (Admin, User) are compiled with:
 | Discovery heartbeat | HTTPS, device → Cloud | 60 s (max 1 / min / device) |
 
 **Anti-bypass:**
+
 - The User's command path checks Admin reachability before sending; no path bypasses it.
 - The Admin's command handler is the only writer of business tables; `apply_event` is the only projection writer.
-- Cloud signing keys live in a separate process (HSM in production); the main API cannot sign. The **patch key is separate again, offline, two-person**.
+- Cloud signing keys live in a separate process (HSM in production); the main API cannot sign. The **patch key is separate again, offline, quorum-gated.**. The **app-updater key** is separate again, offline, quorum-gated (ADR-022).
 - Entitlements are enforced by **what the Cloud will sign**, never by `if plan == X` in the client.
 - The private channel is unreachable by customers: ops-VPN binding, staff hardware keys, public listener returns 404 for `/ops/*`.
 
@@ -334,10 +374,11 @@ The customer's data is always exportable, in open formats, without our permissio
 
 These principles are not enforced by wishful thinking. They are enforced by:
 
-- **Lint rules** (custom TS rules, `cargo deny`, custom Rust lints) — including: no User writes to business tables, no `DELETE` on `events`/`audit_entries`, no `VACUUM INTO`, no raw SQL from a network payload, no plan-id capability branches, no key derivation from a signing key, no bare virtual-IP APIs, no plaintext resource keys on the wire
+- **Lint rules** (custom TS rules, `cargo deny`, custom Rust lints) — including: no User writes to business tables, no `DELETE` on `events`/`audit_entries`, no `VACUUM INTO`, no raw SQL from a network payload, no plan-id capability branches, no key derivation from a signing key, no bare virtual-IP APIs, no plaintext resource keys on the wire, no account-password Argon2 output used as key material
 - **Type system** — branded IDs prevent identity confusion; capability types prevent permission leakage; signing and encryption keys are different types
 - **CI checks** — architecture tests verify module boundaries, repo boundaries, `/ops/*` isolation, export availability in every billing state, and the platform table counts (**18 Admin / 6 User**, ADR-012)
 - **Code review** — every PR reviewed against this document
 - **ADR process** — the only way to break a rule is to write an ADR explaining why
 
 If the code disagrees with this doc set, **the doc set wins** until an ADR supersedes it.
+
