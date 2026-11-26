@@ -225,6 +225,9 @@ Modules run inside the Admin (full capability grants) and the User (projection r
 
 **v1 ships exactly these two modules.** No third-party modules, no marketplace. They are published and updated by us, via the private channel, with quorum approval.
 
+**Future verticals (examples, not scope):** dental-clinic, vet-clinic, pharmacy,
+school-lab. Each is a new signed bundle with its own `mod_<id>_*` prefix.
+Adding one never migrates existing project data (ADR-006/007/011).
 ### 6.1 The project creation form (4 fields)
 
 | Field | What | Example |

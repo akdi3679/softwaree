@@ -26,6 +26,7 @@ reinvented. The React pages survive; the data layer is replaced.
 - No plan tiers beyond Plan 1+ (Solo Cloud)
 - No i18n, no marketplace, no customer portal
 - No Docker required for development
+- No module authoring studio (Owner Console is publish-only)
 
 Each of these is additive in v1.1+. None requires changing v1's event
 format, command layer, bundle format, or update mechanism. New tables

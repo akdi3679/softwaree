@@ -2,7 +2,16 @@
 
 **Status:** Accepted — amended 2026-11-20 (review pass 2)
 **Date:** 2026-11-20
-**Amended:** HostClient interface added, Phase 0 CSP spike for srcdoc iframe, bundle format aligned with ADR-007 split
+**Amended:** 2026-11-25 (Phase 0 spike, Windows/WebView2) — §4 decision recorded.
+Measured: under a strict parent CSP (`script-src 'none'`), a `srcdoc` child's
+nonce'd script is BLOCKED — WebView2 inherits the parent CSP into `about:srcdoc`.
+**Custom-protocol URL is the chosen delivery mechanism (§3.2).** The frame remains
+`sandbox="allow-scripts"` without `allow-same-origin`, so the opaque origin and all
+storage/host-DOM isolation are unchanged. The handler serves only hash-verified
+bundle bytes, accepts no query parameters, resolves no filesystem path from the
+request, and is registered per module load. Radix dropdown, dialog and tooltip
+verified to render and position under `style-src-attr 'unsafe-inline'`.
+Evidence: product/spikes/SPIKES.md, Spike C.
 **Deciders:** Architecture team
 **See also:** ADR-006 (runtime), ADR-007 (signatures), ADR-012 (permissions), ADR-014 (licensing)
 

@@ -51,6 +51,10 @@ adding `medical-reception` later as a new signed bundle with its own
 data.
 **Closure:** v1.1 or v1-medical milestone.
 
+Other verticals (dental, vet, pharmacy, …) are likewise post-v1. v1-foodlab
+ships `food-lab` only. Adding one later is a new bundle, not a migration.
+
+
 ## 5. Plan 1 (Local) Offering (ADR-021)
 **Big doc rule:** Plan 1 is a perpetual local tier with no Cloud backup.
 **v1 deviation:** Plan 1 is **not offered** in v1-foodlab. Only Plan 1+

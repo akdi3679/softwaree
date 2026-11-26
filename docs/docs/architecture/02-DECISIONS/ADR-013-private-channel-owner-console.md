@@ -31,6 +31,10 @@ For v1, the Owner Console is a minimal internal SPA providing:
 
 The "Vertical" (e.g. Food Lab) is selected from the Cloud's **module catalog** (`GET /v1/modules`), so a new module appears in the project-creation flow with no app update. The app ships an **embedded fallback catalog** so first-run signup still works offline; it is refreshed on first Cloud contact and the Cloud copy wins.
 
+- **(Post-v1, proposed)** Module authoring studio — a Sanity-style editor for
+  drafting module schemas/pages. It emits an ordinary bundle through the same
+  three signatures (ADR-007) and the same quorum publish. Workshop, not a bypass.
+  
 ### 2.1 Staff authentication
 
 - Per-staff accounts. Never shared logins.
